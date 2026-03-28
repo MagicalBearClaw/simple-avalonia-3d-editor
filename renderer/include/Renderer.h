@@ -20,6 +20,7 @@
 struct VulkanContext;
 struct OffscreenTarget;
 struct MeshPipeline;
+struct MeshRegistry; // private implementation detail — defined in Renderer.cpp
 
 class RENDERER_API Renderer {
 public:
@@ -33,15 +34,19 @@ public:
     void RenderFrame();
 
     const void* GetPixelData() const;
-    uint32_t    GetWidth() const;
+    uint32_t    GetWidth()  const;
     uint32_t    GetHeight() const;
 
     void SetBackgroundColor(float r, float g, float b, float a);
+
+    // Returns the new instance ID (>= 0).  meshType: 0=Cube 1=Sphere 2=Pyramid 3=Cylinder 4=Cone.
+    int AddMesh(int meshType);
 
 private:
     std::unique_ptr<VulkanContext>   m_ctx;
     std::unique_ptr<OffscreenTarget> m_target;
     std::unique_ptr<MeshPipeline>    m_pipeline;
+    std::unique_ptr<MeshRegistry>    m_meshes;
 
     // Per-frame command buffer (owned by the command pool in VulkanContext)
     VkCommandBuffer m_cmdBuf = VK_NULL_HANDLE;

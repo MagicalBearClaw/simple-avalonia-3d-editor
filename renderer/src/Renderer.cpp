@@ -3,12 +3,30 @@
 #include "VulkanContext.h"
 #include "OffscreenTarget.h"
 #include "MeshPipeline.h"
+#include "Mesh.h"
+#include "MeshGenerator.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <array>
 #include <stdexcept>
 #include <cstring>
+
+// ---------------------------------------------------------------------------
+// Private types — not exposed in the public header
+// ---------------------------------------------------------------------------
+
+struct MeshInstance {
+    int       id;
+    MeshType  type;
+    glm::mat4 transform;
+};
+
+struct MeshRegistry {
+    std::array<MeshAsset, kMeshTypeCount> assets;
+    std::vector<MeshInstance>             instances;
+    int                                   nextId = 0;
+};
 
 // Scene UBO — must match the layout in mesh.vert (set=0, binding=0)
 struct SceneUBO {
@@ -127,6 +145,16 @@ Renderer::Renderer(uint32_t width, uint32_t height)
 
     // ----- MeshPipeline (depends on render pass + scene layout) -----
     m_pipeline = std::make_unique<MeshPipeline>(*m_ctx, *m_target, m_sceneSetLayout);
+
+    // ----- Mesh registry — generate all primitive types and upload to GPU -----
+    m_meshes = std::make_unique<MeshRegistry>();
+    m_meshes->assets[static_cast<int>(MeshType::Cube)]     = MeshGenerator::GenerateCube();
+    m_meshes->assets[static_cast<int>(MeshType::Sphere)]   = MeshGenerator::GenerateSphere();
+    m_meshes->assets[static_cast<int>(MeshType::Pyramid)]  = MeshGenerator::GeneratePyramid();
+    m_meshes->assets[static_cast<int>(MeshType::Cylinder)] = MeshGenerator::GenerateCylinder();
+    m_meshes->assets[static_cast<int>(MeshType::Cone)]     = MeshGenerator::GenerateCone();
+    for (auto& asset : m_meshes->assets)
+        asset.Upload(*m_ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +163,13 @@ Renderer::Renderer(uint32_t width, uint32_t height)
 Renderer::~Renderer()
 {
     vkDeviceWaitIdle(m_ctx->device);
+
+    // Destroy mesh GPU buffers before the allocator goes away
+    if (m_meshes) {
+        for (auto& asset : m_meshes->assets)
+            asset.Destroy(*m_ctx);
+        m_meshes.reset();
+    }
 
     m_pipeline.reset();
 
@@ -214,7 +249,22 @@ void Renderer::RenderFrame()
     scissor.extent = {m_width, m_height};
     vkCmdSetScissor(m_cmdBuf, 0, 1, &scissor);
 
-    // No draw calls yet — mesh instances added in Phase 7
+    // Draw all mesh instances
+    for (const auto& inst : m_meshes->instances) {
+        const MeshAsset& asset = m_meshes->assets[static_cast<int>(inst.type)];
+
+        MeshPushConst pc{};
+        pc.model    = inst.transform;
+        pc.selected = 0;
+        vkCmdPushConstants(m_cmdBuf, m_pipeline->pipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(MeshPushConst), &pc);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(m_cmdBuf, 0, 1, &asset.vertexBuffer, &offset);
+        vkCmdBindIndexBuffer(m_cmdBuf, asset.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(m_cmdBuf, static_cast<uint32_t>(asset.indices.size()), 1, 0, 0, 0);
+    }
 
     vkCmdEndRenderPass(m_cmdBuf);
 
@@ -297,5 +347,20 @@ void Renderer::SetBackgroundColor(float r, float g, float b, float a)
     m_bgColor[1] = g;
     m_bgColor[2] = b;
     m_bgColor[3] = a;
+}
+
+// ---------------------------------------------------------------------------
+// AddMesh
+// ---------------------------------------------------------------------------
+int Renderer::AddMesh(int meshType)
+{
+    const int id = m_meshes->nextId++;
+    MeshInstance inst{};
+    inst.id        = id;
+    inst.type      = static_cast<MeshType>(meshType);
+    inst.transform = glm::translate(glm::mat4(1.0f),
+                                    glm::vec3(static_cast<float>(id) * 2.5f, 0.0f, 0.0f));
+    m_meshes->instances.push_back(inst);
+    return id;
 }
 

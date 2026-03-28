@@ -49,6 +49,7 @@ target_sources(renderer PRIVATE
     src/VulkanContext.cpp
     src/OffscreenTarget.cpp
     src/MeshPipeline.cpp
+    src/MeshGenerator.cpp
     src/VmaImplementation.cpp
 )
 

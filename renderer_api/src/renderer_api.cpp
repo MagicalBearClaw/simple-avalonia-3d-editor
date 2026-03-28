@@ -40,3 +40,8 @@ void renderer_set_background_color(RendererHandle handle, float r, float g, floa
 {
     static_cast<Renderer*>(handle)->SetBackgroundColor(r, g, b, a);
 }
+
+int renderer_add_mesh(RendererHandle handle, int mesh_type)
+{
+    return static_cast<Renderer*>(handle)->AddMesh(mesh_type);
+}
