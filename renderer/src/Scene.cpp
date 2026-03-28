@@ -39,3 +39,10 @@ const std::vector<MeshInstance>& Scene::GetInstances() const
 {
     return m_instances;
 }
+
+MeshInstance* Scene::GetMutableInstance(int id)
+{
+    for (auto& inst : m_instances)
+        if (inst.id == id) return &inst;
+    return nullptr;
+}

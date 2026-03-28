@@ -9,6 +9,8 @@
     "vulkan-memory-allocator",
     "glm",
     "glslang",
-    "sdl3"
+    "sdl3",
+    "imgui",
+    "imguizmo"
   ]
 }

@@ -72,6 +72,16 @@ public:
     // mesh hit, or -1 if nothing was hit.  Also calls SetHighlightedMesh on the result.
     int PickMesh(float screenX, float screenY);
 
+    // Gizmo controls — take effect on the next rendered frame.
+    // op:   0=Translate  1=Rotate  2=Scale
+    // mode: 0=Local      1=World
+    void SetGizmoOperation(int op);
+    void SetGizmoMode(int mode);
+
+    // Returns true while the mouse is hovering or dragging a gizmo handle.
+    // Use this to suppress mesh-pick on gizmo clicks in the editor layer.
+    bool IsGizmoHovered() const;
+
 private:
     std::unique_ptr<VulkanContext>   m_ctx;
     std::unique_ptr<OffscreenTarget> m_target;
@@ -99,4 +109,9 @@ private:
     uint32_t m_width  = 0;
     uint32_t m_height = 0;
     float    m_bgColor[4] = {0.1f, 0.1f, 0.1f, 1.0f};
+
+    // ImGui / ImGuizmo
+    VkDescriptorPool m_imguiPool = VK_NULL_HANDLE;
+    int m_gizmoOp   = 0;  // 0=Translate 1=Rotate 2=Scale
+    int m_gizmoMode = 0;  // 0=LOCAL     1=WORLD
 };

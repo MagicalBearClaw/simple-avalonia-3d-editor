@@ -10,9 +10,14 @@
 #include "FpsCamera.h"
 #include "Scene.h"
 
+#include <imgui.h>
+#include "imgui_impl_vulkan.h"
+#include <ImGuizmo.h>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <array>
 #include <limits>
 #include <stdexcept>
@@ -167,6 +172,42 @@ Renderer::Renderer(uint32_t width, uint32_t height)
     m_camera = std::make_unique<FpsCamera>();
     m_scene  = std::make_unique<Scene>();
     m_lastFrameTime = std::chrono::steady_clock::now();
+
+    // ----- ImGui + ImGuizmo initialization -----
+    {
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 1000;
+
+        VkDescriptorPoolCreateInfo ci{};
+        ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        ci.poolSizeCount = 1;
+        ci.pPoolSizes    = &poolSize;
+        ci.maxSets       = 1000;
+
+        if (vkCreateDescriptorPool(m_ctx->device, &ci, nullptr, &m_imguiPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create ImGui descriptor pool");
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplVulkan_InitInfo imguiInitInfo{};
+    imguiInitInfo.ApiVersion     = VK_API_VERSION_1_2;  // must match VulkanContext app apiVersion
+    imguiInitInfo.Instance       = m_ctx->instance;
+    imguiInitInfo.PhysicalDevice = m_ctx->physicalDevice;
+    imguiInitInfo.Device         = m_ctx->device;
+    imguiInitInfo.QueueFamily    = m_ctx->graphicsFamily;
+    imguiInitInfo.Queue          = m_ctx->graphicsQueue;
+    imguiInitInfo.DescriptorPool = m_imguiPool;
+    imguiInitInfo.RenderPass     = m_target->renderPass;
+    imguiInitInfo.MinImageCount  = 2;  // ImGui requires >= 2 even with synchronous single-buffered rendering
+    imguiInitInfo.ImageCount     = 2;
+    imguiInitInfo.MSAASamples    = VK_SAMPLE_COUNT_1_BIT;
+
+    ImGui_ImplVulkan_Init(&imguiInitInfo);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +216,12 @@ Renderer::Renderer(uint32_t width, uint32_t height)
 Renderer::~Renderer()
 {
     vkDeviceWaitIdle(m_ctx->device);
+
+    // Shut down ImGui before any Vulkan resources are freed
+    ImGui_ImplVulkan_Shutdown();
+    ImGui::DestroyContext();
+    if (m_imguiPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(m_ctx->device, m_imguiPool, nullptr);
 
     // Destroy mesh GPU buffers before the allocator goes away
     if (m_meshes) {
@@ -213,6 +260,24 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 }
 
 // ---------------------------------------------------------------------------
+// Private helpers — ImGuizmo enum mappers
+// ---------------------------------------------------------------------------
+
+static ImGuizmo::OPERATION toImGuizmoOp(int op)
+{
+    switch (op) {
+        case 1:  return ImGuizmo::ROTATE;
+        case 2:  return ImGuizmo::SCALE;
+        default: return ImGuizmo::TRANSLATE; // 0 and anything else → Translate
+    }
+}
+
+static ImGuizmo::MODE toImGuizmoMode(int mode)
+{
+    return (mode == 1) ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+}
+
+// ---------------------------------------------------------------------------
 // RenderFrame
 // ---------------------------------------------------------------------------
 void Renderer::RenderFrame()
@@ -238,6 +303,46 @@ void Renderer::RenderFrame()
     ubo.view = m_camera->GetViewMatrix();
     ubo.proj = m_camera->GetProjectionMatrix(60.0f, aspect, 0.1f, 1000.0f);
     std::memcpy(m_sceneUboMapped, &ubo, sizeof(ubo));
+
+    // ----- Locate the selected instance (mutable — ImGuizmo writes the transform) -----
+    const int highlightedId = m_scene->GetHighlightedMeshId();
+    MeshInstance* selectedInst = m_scene->GetMutableInstance(highlightedId);
+
+    // ----- ImGui / ImGuizmo per-frame IO + gizmo interaction -----
+    // Must happen before vkBeginCommandBuffer so the transformed matrix is correct
+    // for this frame's draw calls.
+    {
+        ImGuiIO& io      = ImGui::GetIO();
+        io.DisplaySize   = ImVec2(static_cast<float>(m_width), static_cast<float>(m_height));
+        io.DeltaTime     = (deltaTime > 0.0f) ? deltaTime : (1.0f / 60.0f);
+        // In non-FPS mode mouseX/Y hold the last absolute cursor position.
+        // In FPS mode they are zeroed out above, which is fine — gizmo is inactive then.
+        io.MousePos      = ImVec2(m_input.mouseX, m_input.mouseY);
+        io.MouseDown[0]  = m_input.leftButton;
+        io.MouseDown[1]  = m_input.rightButton;
+
+        ImGui_ImplVulkan_NewFrame();
+        ImGui::NewFrame();
+
+        ImGuizmo::BeginFrame();
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height));
+
+        if (selectedInst) {
+            // ImGuizmo was designed for OpenGL-style NDC (Y up). Our projection flips Y
+            // for Vulkan, so we un-flip it here before passing to ImGuizmo.
+            glm::mat4 imguizmoProj = ubo.proj;
+            imguizmoProj[1][1] *= -1.0f;
+            ImGuizmo::Manipulate(
+                glm::value_ptr(ubo.view),
+                glm::value_ptr(imguizmoProj),
+                toImGuizmoOp(m_gizmoOp),
+                toImGuizmoMode(m_gizmoMode),
+                glm::value_ptr(selectedInst->transform));
+        }
+
+        ImGui::Render();
+    }
 
     // Begin command buffer
     VkCommandBufferBeginInfo beginInfo{};
@@ -275,13 +380,6 @@ void Renderer::RenderFrame()
     scissor.offset = {0, 0};
     scissor.extent = {m_width, m_height};
     vkCmdSetScissor(m_cmdBuf, 0, 1, &scissor);
-
-    const int highlightedId = m_scene->GetHighlightedMeshId();
-
-    // Locate the selected instance (may be nullptr when nothing is selected)
-    const MeshInstance* selectedInst = nullptr;
-    for (const auto& inst : m_scene->GetInstances())
-        if (inst.id == highlightedId) { selectedInst = &inst; break; }
 
     // --- Pass 1: all non-selected meshes (normal pipeline — no stencil writes) ---
     m_pipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
@@ -343,6 +441,9 @@ void Renderer::RenderFrame()
         vkCmdBindIndexBuffer(m_cmdBuf, asset.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(m_cmdBuf, static_cast<uint32_t>(asset.indices.size()), 1, 0, 0, 0);
     }
+
+    // --- Pass 5: ImGui (gizmo + any future overlays) ---
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), m_cmdBuf);
 
     vkCmdEndRenderPass(m_cmdBuf);
 
@@ -490,6 +591,13 @@ void Renderer::SetFpsMode(bool active)
         m_input.mouseY = 0.0f;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Gizmo controls
+// ---------------------------------------------------------------------------
+void Renderer::SetGizmoOperation(int op)   { m_gizmoOp   = op; }
+void Renderer::SetGizmoMode(int mode)      { m_gizmoMode = mode; }
+bool Renderer::IsGizmoHovered() const      { return ImGuizmo::IsOver() || ImGuizmo::IsUsing(); }
 
 // ---------------------------------------------------------------------------
 // CPU ray picking

@@ -4,6 +4,8 @@ find_package(Vulkan REQUIRED)
 find_package(volk CONFIG REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
+find_package(imguizmo CONFIG REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Shader compilation (GLSL → SPIR-V)
@@ -87,6 +89,7 @@ target_sources(renderer PRIVATE
     src/FpsCamera.cpp
     src/Scene.cpp
     src/VmaImplementation.cpp
+    src/imgui_impl_vulkan.cpp
 )
 
 target_include_directories(renderer
@@ -101,12 +104,15 @@ target_link_libraries(renderer
         GPUOpen::VulkanMemoryAllocator
     PRIVATE
         glm::glm
+        imgui::imgui
+        imguizmo::imguizmo
 )
 
 target_compile_definitions(renderer PRIVATE
     VMA_STATIC_VULKAN_FUNCTIONS=0
     VMA_DYNAMIC_VULKAN_FUNCTIONS=1
     RENDERER_EXPORTS
+    IMGUI_IMPL_VULKAN_USE_VOLK
 )
 
 add_dependencies(renderer renderer_shaders)

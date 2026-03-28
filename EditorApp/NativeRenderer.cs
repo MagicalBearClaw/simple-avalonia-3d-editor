@@ -54,4 +54,13 @@ internal static partial class NativeRenderer
 
     [LibraryImport("renderer_api")]
     internal static partial int renderer_pick_mesh(nint handle, float x, float y);
+
+    [LibraryImport("renderer_api")]
+    internal static partial void renderer_set_gizmo_operation(nint handle, int op);   // 0=Translate 1=Rotate 2=Scale
+
+    [LibraryImport("renderer_api")]
+    internal static partial void renderer_set_gizmo_mode(nint handle, int mode);      // 0=Local 1=World
+
+    [LibraryImport("renderer_api")]
+    internal static partial int renderer_is_gizmo_hovered(nint handle);               // 0 or 1
 }

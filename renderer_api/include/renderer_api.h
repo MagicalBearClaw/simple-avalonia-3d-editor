@@ -33,6 +33,9 @@ RENDERER_C_API void           renderer_on_key(RendererHandle handle, int key, in
 RENDERER_C_API void           renderer_on_scroll(RendererHandle handle, float delta);
 RENDERER_C_API void           renderer_set_fps_mode(RendererHandle handle, int active);
 RENDERER_C_API int            renderer_pick_mesh(RendererHandle handle, float x, float y);
+RENDERER_C_API void           renderer_set_gizmo_operation(RendererHandle handle, int op);   // 0=Translate 1=Rotate 2=Scale
+RENDERER_C_API void           renderer_set_gizmo_mode(RendererHandle handle, int mode);      // 0=Local 1=World
+RENDERER_C_API int            renderer_is_gizmo_hovered(RendererHandle handle);              // 0 or 1
 
 #ifdef __cplusplus
 }

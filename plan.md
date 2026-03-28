@@ -559,44 +559,102 @@ Viewport and scissor only need to be set once (before Pass 1) since they are sha
 
 ### 12a. `vcpkg.json` Additions
 ```json
-"imgui[vulkan-binding,docking]",
+{ "name": "imgui", "features": ["vulkan-binding"] },
 "imguizmo"
 ```
+Note: the `docking` feature is not needed in the renderer — ImGui is only used as a Vulkan draw backend for ImGuizmo.
 
-### 12b. ImGui Vulkan Initialization (in `Renderer` constructor)
-- Create dedicated `VkDescriptorPool` for ImGui (combined image sampler pool, size 1000)
-- `ImGui::CreateContext()`
-- Fill `ImGui_ImplVulkan_InitInfo` with device, physical device, queue, render pass, descriptor pool
-- `ImGui_ImplVulkan_Init(&initInfo)`
-- Upload ImGui fonts via a single-submission command buffer
+### 12b. `renderer/CMakeLists.txt`
+- `find_package(imgui CONFIG REQUIRED)` + `find_package(imguizmo CONFIG REQUIRED)`
+- Link `imgui::imgui` and `imguizmo::imguizmo` to `renderer PRIVATE`
 
-### 12c. Per-Frame ImGui IO
-Manually populate `ImGui::GetIO()` from `InputState` before `ImGui::NewFrame()`:
-`DisplaySize`, `DeltaTime`, `MousePos`, `MouseDown[0/1]`, `MouseWheel`
+### 12c. `Scene` extension (`Scene.h` / `Scene.cpp`)
+- Add `MeshInstance* GetMutableInstance(int id)` returning a mutable pointer into `m_instances`
+- Used by `ImGuizmo::Manipulate` to write the updated transform matrix directly into the scene
 
-### 12d. ImGuizmo Per Frame (inside render pass, after mesh draws)
+### 12d. `Renderer.h` additions (no imgui includes in header)
+- Private `VkDescriptorPool m_imguiPool = VK_NULL_HANDLE` — COMBINED_IMAGE_SAMPLER pool for ImGui
+- Private `int m_gizmoOp = 0` (0=Translate, 1=Rotate, 2=Scale)
+- Private `int m_gizmoMode = 0` (0=LOCAL, 1=WORLD)
+- Public `void SetGizmoOperation(int op)`, `void SetGizmoMode(int mode)`, `bool IsGizmoHovered() const`
+
+### 12e. `Renderer.cpp` constructor (after camera/scene init)
+- Create `m_imguiPool`: `VkDescriptorPoolSize` COMBINED_IMAGE_SAMPLER ×1000, `FREE_DESCRIPTOR_SET_BIT`, maxSets=1000
+- `IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGui::StyleColorsDark();`
+- Fill `ImGui_ImplVulkan_InitInfo` (Instance, PhysicalDevice, Device, QueueFamily, Queue, DescriptorPool=`m_imguiPool`, RenderPass=`m_target->renderPass`, MinImageCount=1, ImageCount=1, MSAASamples=1)
+- `ImGui_ImplVulkan_Init(&imguiInitInfo)` — fonts auto-uploaded on first `NewFrame` in imgui 1.90+
+
+### 12f. `Renderer.cpp` destructor (after `vkDeviceWaitIdle`, before pipeline resets)
+- `ImGui_ImplVulkan_Shutdown(); ImGui::DestroyContext();`
+- `vkDestroyDescriptorPool(m_ctx->device, m_imguiPool, nullptr);`
+
+### 12g. `Renderer.cpp` — `RenderFrame` restructure
+
+**Before `vkBeginCommandBuffer`:**
+1. Find `MeshInstance* selectedInst = m_scene->GetMutableInstance(highlightedId)` (mutable — replaces the earlier const loop)
+2. Feed `ImGuiIO`: `DisplaySize`, `DeltaTime`, `MousePos`, `MouseDown[0/1]`
+3. `ImGui_ImplVulkan_NewFrame(); ImGui::NewFrame();`
+4. `ImGuizmo::BeginFrame(); ImGuizmo::SetOrthographic(false); ImGuizmo::SetRect(0,0,w,h);`
+5. If `selectedInst`: un-flip projection Y for ImGuizmo (`imguizmoProj[1][1] *= -1`) then call `ImGuizmo::Manipulate(view, imguizmoProj, toImGuizmoOp(m_gizmoOp), toImGuizmoMode(m_gizmoMode), selectedInst->transform)` — modifies transform in place
+6. `ImGui::Render()`
+
+**Inside render pass, after Pass 4 (outline), before `vkCmdEndRenderPass`:**
 ```cpp
-ImGui_ImplVulkan_NewFrame();
-ImGui::NewFrame();
-ImGuizmo::BeginFrame();
-ImGuizmo::SetOrthographic(false);
-ImGuizmo::SetRect(0, 0, width, height);
-if (selectedInstance) {
-    ImGuizmo::Manipulate(
-        glm::value_ptr(view), glm::value_ptr(proj),
-        m_gizmoOp, ImGuizmo::LOCAL,
-        glm::value_ptr(selectedInstance->transform));
-}
-ImGui::Render();
-ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuf);
+// --- Pass 5: ImGui (gizmo + any future overlays) ---
+ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), m_cmdBuf);
 ```
 
-### 12e. C API Additions
-- `renderer_set_gizmo_operation(RendererHandle, int op)` — 0=translate, 1=rotate, 2=scale
-- `renderer_is_gizmo_hovered(RendererHandle) → bool` — returns `ImGuizmo::IsOver() || ImGuizmo::IsUsing()`
+Add static helpers:
+- `toImGuizmoOp(int)` → 0=TRANSLATE, 1=ROTATE, 2=SCALE
+- `toImGuizmoMode(int)` → 0=LOCAL, 1=WORLD
 
-### 12f. CMake Linking
-Add `imgui::imgui` and `imguizmo::imguizmo` to `renderer` target in `renderer/CMakeLists.txt`.
+### 12h. C API additions (`renderer_api.h` / `renderer_api.cpp`)
+```c
+RENDERER_C_API void renderer_set_gizmo_operation(RendererHandle handle, int op);   // 0=Translate 1=Rotate 2=Scale
+RENDERER_C_API void renderer_set_gizmo_mode(RendererHandle handle, int mode);      // 0=Local 1=World
+RENDERER_C_API int  renderer_is_gizmo_hovered(RendererHandle handle);              // 0 or 1
+```
+
+### 12i. `NativeRenderer.cs` P/Invoke stubs
+```csharp
+[LibraryImport("renderer_api")]
+internal static partial void renderer_set_gizmo_operation(nint handle, int op);
+[LibraryImport("renderer_api")]
+internal static partial void renderer_set_gizmo_mode(nint handle, int mode);
+[LibraryImport("renderer_api")]
+internal static partial int renderer_is_gizmo_hovered(nint handle);
+```
+
+### Files changed in Phase 12
+| File | Change |
+|---|---|
+| `vcpkg.json` | add `imgui[vulkan-binding,docking]`, `imguizmo` |
+| `renderer/CMakeLists.txt` | `find_package` + `target_link_libraries` |
+| `renderer/src/Scene.h` | add `GetMutableInstance` declaration |
+| `renderer/src/Scene.cpp` | implement `GetMutableInstance` |
+| `renderer/include/Renderer.h` | add `m_imguiPool`, `m_gizmoOp`, `m_gizmoMode`, new public API |
+| `renderer/src/Renderer.cpp` | ImGui init/shutdown; per-frame IO/gizmo; static mappers; new methods |
+| `renderer_api/include/renderer_api.h` | three new C API declarations |
+| `renderer_api/src/renderer_api.cpp` | three new implementations |
+| `EditorApp/NativeRenderer.cs` | three new P/Invoke stubs |
+
+### Decisions
+- No ImGui platform backend (`ImGui_ImplWin32_Init` etc.) — IO fed manually from `InputState`
+- `io.MouseWheel` not wired — scroll already consumed by camera zoom; ImGuizmo doesn't use it
+- Projection Y un-flip before passing to ImGuizmo — `GetProjectionMatrix` flips Y for Vulkan NDC; ImGuizmo expects OpenGL-style Y-up NDC
+- `m_imguiPool` is a **separate** pool from `m_descriptorPool` — ImGui requires its own COMBINED_IMAGE_SAMPLER pool
+- `ImGuizmo::Manipulate` modifies `selectedInst->transform` in-place per frame — correct because frames are synchronous (`vkQueueWaitIdle`)
+- `renderer_is_gizmo_hovered` returns `int` (0/1) for C ABI compatibility
+
+### Verification
+- Build succeeds — vcpkg resolves imgui + imguizmo from the updated manifest
+- App launches without Vulkan validation errors
+- Add a mesh → click to select → translate gizmo (XYZ arrows) appears on mesh
+- Drag gizmo arrow → mesh moves in real time
+- Toggle gizmo mode (LOCAL/WORLD) → gizmo axes switch between object-relative and world-aligned
+- Toggle T/R/S buttons (Phase 14) → gizmo switches operation
+- Clicking a gizmo handle does NOT trigger mesh pick (Phase 14 wires `renderer_is_gizmo_hovered`)
+- Resize → gizmo repositions correctly (`DisplaySize` updated each frame)
 
 ---
 
@@ -616,6 +674,7 @@ All added to `renderer_api/include/renderer_api.h` and `renderer_api/src/rendere
 | `renderer_on_scroll(handle, float delta)` | 8 |
 | `renderer_set_fps_mode(handle, bool active)` | 8 |
 | `renderer_set_gizmo_operation(handle, int op)` | 12 |
+| `renderer_set_gizmo_mode(handle, int mode)` | 12 |
 | `renderer_is_gizmo_hovered(handle) → bool` | 12 |
 
 ---

@@ -85,3 +85,18 @@ int renderer_pick_mesh(RendererHandle handle, float x, float y)
 {
     return static_cast<Renderer*>(handle)->PickMesh(x, y);
 }
+
+void renderer_set_gizmo_operation(RendererHandle handle, int op)
+{
+    static_cast<Renderer*>(handle)->SetGizmoOperation(op);
+}
+
+void renderer_set_gizmo_mode(RendererHandle handle, int mode)
+{
+    static_cast<Renderer*>(handle)->SetGizmoMode(mode);
+}
+
+int renderer_is_gizmo_hovered(RendererHandle handle)
+{
+    return static_cast<Renderer*>(handle)->IsGizmoHovered() ? 1 : 0;
+}
