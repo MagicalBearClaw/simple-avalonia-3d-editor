@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -12,6 +13,15 @@ namespace EditorApp.Controls;
 
 public sealed class RendererControl : Control
 {
+    // ----- Selected mesh ID — updated on left-click via ray pick -----
+    public static readonly StyledProperty<int> SelectedMeshIdProperty =
+        AvaloniaProperty.Register<RendererControl, int>(nameof(SelectedMeshId), defaultValue: -1);
+
+    public int SelectedMeshId
+    {
+        get => GetValue(SelectedMeshIdProperty);
+        set => SetValue(SelectedMeshIdProperty, value);
+    }
     private readonly object _syncObject = new();
     private nint _handle;
     private WriteableBitmap? _bitmap;
@@ -20,6 +30,7 @@ public sealed class RendererControl : Control
     private Thread? _renderThread;
     private CancellationTokenSource? _cts;
     private volatile bool _postPending;
+    private bool _suppressHighlightForward;
 
     // Resize is signaled to the render thread so the UI thread never blocks on GPU work.
     private volatile bool _hasPendingResize;
@@ -53,6 +64,28 @@ public sealed class RendererControl : Control
                     HandleResize(w, h);
             }
         }
+        else if (change.Property == SelectedMeshIdProperty && RendererState.IsReady && !_suppressHighlightForward)
+        {
+            // Propagate external SelectedMeshId changes (e.g. VM clearing selection) to the renderer.
+            NativeRenderer.renderer_set_highlighted_mesh(RendererState.Handle, change.GetNewValue<int>());
+        }
+    }
+
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        base.OnPointerPressed(e);
+        Focus(NavigationMethod.Pointer);
+
+        if (!RendererState.IsReady) return;
+        var props = e.GetCurrentPoint(this).Properties;
+        if (!props.IsLeftButtonPressed) return;
+
+        var pos    = e.GetPosition(this);
+        var result = NativeRenderer.renderer_pick_mesh(_handle, (float)pos.X, (float)pos.Y);
+        // Update property without re-calling renderer_set_highlighted_mesh (PickMesh already did it).
+        _suppressHighlightForward = true;
+        SelectedMeshId = result;
+        _suppressHighlightForward = false;
     }
 
     public override void Render(DrawingContext context)

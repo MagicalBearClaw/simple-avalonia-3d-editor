@@ -10,7 +10,9 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <array>
+#include <limits>
 #include <stdexcept>
 #include <cstring>
 
@@ -428,5 +430,82 @@ void Renderer::SetFpsMode(bool active)
         m_input.mouseX = 0.0f;
         m_input.mouseY = 0.0f;
     }
+}
+
+// ---------------------------------------------------------------------------
+// CPU ray picking
+// ---------------------------------------------------------------------------
+
+// Möller–Trumbore ray-triangle intersection.
+// Returns t > 0 on hit, -1 on miss.
+static float MollerTrumbore(
+    const glm::vec3& ro, const glm::vec3& rd,
+    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2)
+{
+    constexpr float kEpsilon = 1e-6f;
+    const glm::vec3 edge1 = v1 - v0;
+    const glm::vec3 edge2 = v2 - v0;
+    const glm::vec3 h     = glm::cross(rd, edge2);
+    const float     a     = glm::dot(edge1, h);
+    if (a > -kEpsilon && a < kEpsilon) return -1.0f; // ray parallel to triangle
+    const float     f = 1.0f / a;
+    const glm::vec3 s = ro - v0;
+    const float     u = f * glm::dot(s, h);
+    if (u < 0.0f || u > 1.0f) return -1.0f;
+    const glm::vec3 q = glm::cross(s, edge1);
+    const float     v = f * glm::dot(rd, q);
+    if (v < 0.0f || u + v > 1.0f) return -1.0f;
+    const float     t = f * glm::dot(edge2, q);
+    return (t > kEpsilon) ? t : -1.0f;
+}
+
+int Renderer::PickMesh(float screenX, float screenY)
+{
+    const float aspect = (m_height > 0)
+        ? static_cast<float>(m_width) / static_cast<float>(m_height)
+        : 1.0f;
+    const glm::mat4 proj = m_camera->GetProjectionMatrix(60.0f, aspect, 0.1f, 1000.0f);
+    const glm::mat4 view = m_camera->GetViewMatrix();
+
+    // Screen → NDC
+    const float nx =  2.0f * screenX / static_cast<float>(m_width)  - 1.0f;
+    const float ny =  1.0f - 2.0f * screenY / static_cast<float>(m_height);
+
+    // NDC → view-space ray direction
+    glm::vec4 rayView = glm::inverse(proj) * glm::vec4(nx, ny, -1.0f, 1.0f);
+    rayView.z = -1.0f;
+    rayView.w =  0.0f;
+
+    // View space → world space
+    const glm::vec3 rayWorldDir = glm::normalize(glm::vec3(glm::inverse(view) * rayView));
+    const glm::vec3 rayOrigin   = m_camera->position;
+
+    float bestT  = std::numeric_limits<float>::max();
+    int   bestId = -1;
+
+    for (const auto& inst : m_scene->GetInstances()) {
+        const MeshAsset& asset = m_meshes->assets[static_cast<int>(inst.type)];
+
+        // Transform ray into object space
+        const glm::mat4 invModel = glm::inverse(inst.transform);
+        const glm::vec3 roObj    = glm::vec3(invModel * glm::vec4(rayOrigin, 1.0f));
+        const glm::vec3 rdObj    = glm::normalize(glm::mat3(invModel) * rayWorldDir);
+
+        const auto& verts   = asset.vertices;
+        const auto& indices = asset.indices;
+        for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+            const glm::vec3 v0 = verts[indices[i + 0]].pos;
+            const glm::vec3 v1 = verts[indices[i + 1]].pos;
+            const glm::vec3 v2 = verts[indices[i + 2]].pos;
+            const float t = MollerTrumbore(roObj, rdObj, v0, v1, v2);
+            if (t > 0.0f && t < bestT) {
+                bestT  = t;
+                bestId = inst.id;
+            }
+        }
+    }
+
+    m_scene->SetHighlightedMesh(bestId);
+    return bestId;
 }
 

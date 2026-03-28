@@ -80,3 +80,8 @@ void renderer_set_fps_mode(RendererHandle handle, int active)
 {
     static_cast<Renderer*>(handle)->SetFpsMode(active != 0);
 }
+
+int renderer_pick_mesh(RendererHandle handle, float x, float y)
+{
+    return static_cast<Renderer*>(handle)->PickMesh(x, y);
+}

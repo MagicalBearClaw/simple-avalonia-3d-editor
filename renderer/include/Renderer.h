@@ -66,6 +66,10 @@ public:
     void OnScroll(float delta);
     void SetFpsMode(bool active);
 
+    // CPU ray pick: cast a ray from screen pixel (x,y) and return the ID of the closest
+    // mesh hit, or -1 if nothing was hit.  Also calls SetHighlightedMesh on the result.
+    int PickMesh(float screenX, float screenY);
+
 private:
     std::unique_ptr<VulkanContext>   m_ctx;
     std::unique_ptr<OffscreenTarget> m_target;

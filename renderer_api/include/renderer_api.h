@@ -32,6 +32,7 @@ RENDERER_C_API void           renderer_on_mouse_button(RendererHandle handle, in
 RENDERER_C_API void           renderer_on_key(RendererHandle handle, int key, int pressed);
 RENDERER_C_API void           renderer_on_scroll(RendererHandle handle, float delta);
 RENDERER_C_API void           renderer_set_fps_mode(RendererHandle handle, int active);
+RENDERER_C_API int            renderer_pick_mesh(RendererHandle handle, float x, float y);
 
 #ifdef __cplusplus
 }

@@ -4,5 +4,6 @@
              xmlns:vm="using:EditorApp.ViewModels"
              x:Class="EditorApp.Views.RendererDocumentView"
              x:DataType="vm:RendererDocumentViewModel">
-    <controls:RendererControl HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+    <controls:RendererControl HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                              SelectedMeshId="{Binding SelectedMeshId, Mode=TwoWay}"/>
 </UserControl>
