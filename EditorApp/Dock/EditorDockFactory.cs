@@ -22,6 +22,12 @@ public class EditorDockFactory : Factory
             Title = "Scene Properties"
         };
 
+        var primitives = new PrimitivesToolViewModel
+        {
+            Id = "Primitives",
+            Title = "Primitives"
+        };
+
         var documentDock = new DocumentDock
         {
             Id = "DocumentDock",
@@ -36,7 +42,7 @@ public class EditorDockFactory : Factory
             Proportion = 0.25,
             Alignment = Alignment.Left,
             GripMode = GripMode.Visible,
-            VisibleDockables = CreateList<IDockable>(sceneProps),
+            VisibleDockables = CreateList<IDockable>(sceneProps, primitives),
             ActiveDockable = sceneProps
         };
 

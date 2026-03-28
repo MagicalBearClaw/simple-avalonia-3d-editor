@@ -63,4 +63,11 @@ internal static partial class NativeRenderer
 
     [LibraryImport("renderer_api")]
     internal static partial int renderer_is_gizmo_hovered(nint handle);               // 0 or 1
+
+    // Win32 cursor helpers — used for FPS mode cursor hide/re-center.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern bool ShowCursor(bool bShow);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern bool SetCursorPos(int X, int Y);
 }

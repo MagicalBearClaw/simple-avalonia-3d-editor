@@ -1,0 +1,15 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:EditorApp.ViewModels"
+             x:Class="EditorApp.Views.PrimitivesToolView"
+             x:DataType="vm:PrimitivesToolViewModel">
+    <ScrollViewer>
+        <StackPanel Margin="6" Spacing="4">
+            <Button HorizontalAlignment="Stretch" Content="Add Cube"     Command="{Binding AddCubeCommand}"/>
+            <Button HorizontalAlignment="Stretch" Content="Add Sphere"   Command="{Binding AddSphereCommand}"/>
+            <Button HorizontalAlignment="Stretch" Content="Add Pyramid"  Command="{Binding AddPyramidCommand}"/>
+            <Button HorizontalAlignment="Stretch" Content="Add Cylinder" Command="{Binding AddCylinderCommand}"/>
+            <Button HorizontalAlignment="Stretch" Content="Add Cone"     Command="{Binding AddConeCommand}"/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

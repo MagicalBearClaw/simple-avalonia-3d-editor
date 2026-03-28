@@ -4,6 +4,32 @@
              xmlns:vm="using:EditorApp.ViewModels"
              x:Class="EditorApp.Views.RendererDocumentView"
              x:DataType="vm:RendererDocumentViewModel">
-    <controls:RendererControl HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                              SelectedMeshId="{Binding SelectedMeshId, Mode=TwoWay}"/>
+    <Grid>
+        <!-- The rendered Vulkan viewport fills the entire area -->
+        <controls:RendererControl HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                  SelectedMeshId="{Binding SelectedMeshId, Mode=TwoWay}"
+                                  FpsModeActive="{Binding FpsModeActive, Mode=TwoWay}"/>
+
+        <!-- Gizmo operation toolbar — top-left overlay -->
+        <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top"
+                    Orientation="Horizontal" Margin="4" Spacing="2">
+            <ToggleButton Content="T" Width="28" Height="28"
+                          IsChecked="{Binding IsTranslateMode, Mode=TwoWay}"
+                          ToolTip.Tip="Translate"/>
+            <ToggleButton Content="R" Width="28" Height="28"
+                          IsChecked="{Binding IsRotateMode, Mode=TwoWay}"
+                          ToolTip.Tip="Rotate"/>
+            <ToggleButton Content="S" Width="28" Height="28"
+                          IsChecked="{Binding IsScaleMode, Mode=TwoWay}"
+                          ToolTip.Tip="Scale"/>
+        </StackPanel>
+
+        <!-- FPS mode indicator — bottom-center overlay -->
+        <TextBlock Text="FPS MODE"
+                   HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                   Margin="0,0,0,8"
+                   IsVisible="{Binding FpsModeActive}"
+                   Foreground="Yellow" FontWeight="Bold"/>
+    </Grid>
 </UserControl>
+

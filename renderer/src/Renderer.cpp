@@ -559,9 +559,12 @@ void Renderer::OnMouseButton(int btn, bool pressed, float x, float y)
 {
     if (btn == 0) m_input.leftButton  = pressed;
     if (btn == 1) m_input.rightButton = pressed;
-    // Store last position so other systems can use it.
-    m_input.mouseX = x;
-    m_input.mouseY = y;
+    // Only update stored position in non-FPS mode.  In FPS mode mouseX/Y hold accumulated
+    // movement deltas from pointer-move events and must not be clobbered by a click position.
+    if (!m_input.fpsMode) {
+        m_input.mouseX = x;
+        m_input.mouseY = y;
+    }
 }
 
 void Renderer::OnKey(int key, bool pressed)
@@ -634,9 +637,11 @@ int Renderer::PickMesh(float screenX, float screenY)
     const glm::mat4 proj = m_camera->GetProjectionMatrix(60.0f, aspect, 0.1f, 1000.0f);
     const glm::mat4 view = m_camera->GetViewMatrix();
 
-    // Screen → NDC
+    // Screen → Vulkan NDC (Y = -1 at top, +1 at bottom, matching the flipped projection).
+    // Using the OpenGL convention (ny = 1 - 2*y/h) would invert the ray's Y because
+    // GetProjectionMatrix already flips proj[1][1] for Vulkan, so inverse(proj) also flips Y.
     const float nx =  2.0f * screenX / static_cast<float>(m_width)  - 1.0f;
-    const float ny =  1.0f - 2.0f * screenY / static_cast<float>(m_height);
+    const float ny =  2.0f * screenY / static_cast<float>(m_height) - 1.0f;
 
     // NDC → view-space ray direction
     glm::vec4 rayView = glm::inverse(proj) * glm::vec4(nx, ny, -1.0f, 1.0f);

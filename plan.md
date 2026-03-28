@@ -761,7 +761,64 @@ Wrap `RendererControl` in a `Grid`. Add:
 
 ---
 
-## Verification
+## Phase 13: Avalonia Full Input Wiring + Primitives Panel
+
+*Depends on Phase 12 (C API fully available). Implements what was called "Phase 14" in earlier planning.*
+
+### 13a. Win32 Cursor Stubs (`NativeRenderer.cs`)
+- `[DllImport("user32.dll")] internal static extern bool ShowCursor(bool bShow)`
+- `[DllImport("user32.dll")] internal static extern bool SetCursorPos(int X, int Y)`
+
+### 13b. `RendererDocumentViewModel` Extensions
+- Made `partial` class; converted `SelectedMeshId` to `[ObservableProperty]`
+- `[ObservableProperty] private int _gizmoOperation = 0` — `partial void OnGizmoOperationChanged` calls `renderer_set_gizmo_operation` and raises notifications for the three bool shortcuts
+- `[ObservableProperty] private bool _fpsModeActive = false`
+- `IsTranslateMode`, `IsRotateMode`, `IsScaleMode` — read/write bool shims for ToggleButton TwoWay binding; setter silently ignores `false` (re-raises `OnPropertyChanged` so button stays checked on re-click)
+
+### 13c. `RendererControl.cs` — Full Input Wiring
+- `FpsModeActiveProperty` (`StyledProperty<bool>`) — bound TwoWay to VM
+- `private volatile bool _ignoreNextMove` — suppresses synthetic `PointerMoved` after Win32 re-center
+- `OnPointerMoved`: normal → `renderer_on_mouse_move(x, y)`; FPS → delta from viewport center → `renderer_on_mouse_move(dx, dy)` + `SetCursorPos` snap to center
+- `OnPointerPressed`: forward btn + `renderer_on_mouse_button`; left-click ray-pick guarded by `!FpsModeActive && renderer_is_gizmo_hovered == 0`
+- `OnPointerReleased`: forward `renderer_on_mouse_button(btn, 0, x, y)`
+- `OnPointerWheelChanged`: `renderer_on_scroll(delta.Y)`
+- `OnKeyDown`: W/S/A/D → `renderer_on_key`; F → enter FPS + `ShowCursor(false)`; Escape → exit FPS + `ShowCursor(true)`; Delete → `renderer_remove_mesh` + clear `SelectedMeshId`
+- `OnKeyUp`: W/S/A/D → `renderer_on_key(..., 0)`
+- `StopRenderer`: exits FPS mode cleanly (`ShowCursor(true)`) before tearing down handle
+
+### 13d. `PrimitivesToolViewModel` (new)
+- Five `[RelayCommand]` methods `AddCube/Sphere/Pyramid/Cylinder/Cone` calling `renderer_add_mesh` (types 0–4)
+
+### 13e. `PrimitivesToolView.axaml` (new)
+- 5 stretch Buttons bound to the relay commands
+
+### 13f. `EditorDockFactory.cs` Update
+- `PrimitivesToolViewModel` added to `ToolDock.VisibleDockables` alongside `ScenePropertiesViewModel`
+
+### 13g. `RendererDocumentView.axaml` Overlay
+- `RendererControl` wrapped in `Grid`; `FpsModeActive` binding added
+- Top-left gizmo toolbar: 3 `ToggleButton`s T/R/S bound TwoWay to `IsTranslateMode/IsRotateMode/IsScaleMode`
+- Bottom-center FPS label: `IsVisible="{Binding FpsModeActive}"`, yellow bold text
+
+### Files changed in Phase 13
+| File | Change |
+|---|---|
+| `EditorApp/NativeRenderer.cs` | Win32 `ShowCursor` + `SetCursorPos` stubs |
+| `EditorApp/Controls/RendererControl.cs` | `FpsModeActiveProperty` + full input overrides |
+| `EditorApp/ViewModels/RendererDocumentViewModel.cs` | `partial`, `[ObservableProperty]` + gizmo/FPS props |
+| `EditorApp/ViewModels/PrimitivesToolViewModel.cs` | **new** |
+| `EditorApp/Views/PrimitivesToolView.axaml` | **new** |
+| `EditorApp/Views/PrimitivesToolView.axaml.cs` | **new** |
+| `EditorApp/Dock/EditorDockFactory.cs` | Add `PrimitivesToolViewModel` to tool dock |
+| `EditorApp/Views/RendererDocumentView.axaml` | Grid overlay + gizmo toolbar + FPS label |
+
+### Decisions
+- ToggleButton `IsChecked` TwoWay to bool VM props; setter ignores `false` + re-raises notification so re-clicking active button stays checked
+- FPS cursor: Win32 `SetCursorPos` re-center per `PointerMoved` with `_ignoreNextMove` volatile flag
+- F/Escape/Delete handled entirely in Avalonia; W/S/A/D forwarded to C++ via `renderer_on_key`
+- `GizmoOperation` calls `renderer_set_gizmo_operation` from VM `OnGizmoOperationChanged`; `RendererControl` not involved
+
+---
 
 **Phases 1–5 (original)**
 1. `cmake --preset windows-debug && cmake --build build/` → produces `renderer.dll` + `renderer_api.dll`

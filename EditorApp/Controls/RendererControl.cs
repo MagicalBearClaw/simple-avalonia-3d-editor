@@ -22,6 +22,24 @@ public sealed class RendererControl : Control
         get => GetValue(SelectedMeshIdProperty);
         set => SetValue(SelectedMeshIdProperty, value);
     }
+
+    // ----- FPS mode active — bound TwoWay to RendererDocumentViewModel.FpsModeActive -----
+    public static readonly StyledProperty<bool> FpsModeActiveProperty =
+        AvaloniaProperty.Register<RendererControl, bool>(nameof(FpsModeActive), defaultValue: false);
+
+    public bool FpsModeActive
+    {
+        get => GetValue(FpsModeActiveProperty);
+        set => SetValue(FpsModeActiveProperty, value);
+    }
+
+    public RendererControl()
+    {
+        // Must be focusable so OnKeyDown/OnKeyUp are routed to this control
+        // after the user clicks into the viewport.
+        Focusable = true;
+    }
+
     private readonly object _syncObject = new();
     private nint _handle;
     private WriteableBitmap? _bitmap;
@@ -30,6 +48,7 @@ public sealed class RendererControl : Control
     private Thread? _renderThread;
     private CancellationTokenSource? _cts;
     private volatile bool _postPending;
+    private volatile bool _ignoreNextMove;
     private bool _suppressHighlightForward;
 
     // Resize is signaled to the render thread so the UI thread never blocks on GPU work.
@@ -71,28 +90,155 @@ public sealed class RendererControl : Control
         }
     }
 
+    // ----- Pointer input -----
+
+    protected override void OnPointerMoved(PointerEventArgs e)
+    {
+        base.OnPointerMoved(e);
+        if (!RendererState.IsReady) return;
+
+        // Suppress the synthetic PointerMoved produced by Win32 re-centering in FPS mode.
+        if (_ignoreNextMove) { _ignoreNextMove = false; return; }
+
+        var pos = e.GetPosition(this);
+        if (!FpsModeActive)
+        {
+            NativeRenderer.renderer_on_mouse_move(_handle, (float)pos.X, (float)pos.Y);
+        }
+        else
+        {
+            // Forward delta from viewport center, then snap cursor back to center.
+            float dx = (float)(pos.X - Bounds.Width  / 2.0);
+            float dy = (float)(pos.Y - Bounds.Height / 2.0);
+            NativeRenderer.renderer_on_mouse_move(_handle, dx, dy);
+            var screenCenter = this.PointToScreen(new Point(Bounds.Width / 2.0, Bounds.Height / 2.0));
+            _ignoreNextMove = true;
+            NativeRenderer.SetCursorPos((int)screenCenter.X, (int)screenCenter.Y);
+        }
+    }
+
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);
         Focus(NavigationMethod.Pointer);
 
         if (!RendererState.IsReady) return;
+        var pos   = e.GetPosition(this);
         var props = e.GetCurrentPoint(this).Properties;
-        if (!props.IsLeftButtonPressed) return;
 
-        var pos    = e.GetPosition(this);
-        var result = NativeRenderer.renderer_pick_mesh(_handle, (float)pos.X, (float)pos.Y);
-        // Update property without re-calling renderer_set_highlighted_mesh (PickMesh already did it).
-        _suppressHighlightForward = true;
-        SelectedMeshId = result;
-        _suppressHighlightForward = false;
+        if (props.IsLeftButtonPressed)
+        {
+            NativeRenderer.renderer_on_mouse_button(_handle, 0, 1, (float)pos.X, (float)pos.Y);
+            // Ray-pick only when not in FPS mode and the gizmo isn't being dragged.
+            if (!FpsModeActive && NativeRenderer.renderer_is_gizmo_hovered(_handle) == 0)
+            {
+                var result = NativeRenderer.renderer_pick_mesh(_handle, (float)pos.X, (float)pos.Y);
+                // PickMesh already called SetHighlightedMesh; suppress the redundant forward.
+                _suppressHighlightForward = true;
+                SelectedMeshId = result;
+                _suppressHighlightForward = false;
+            }
+        }
+        else if (props.IsRightButtonPressed)
+        {
+            NativeRenderer.renderer_on_mouse_button(_handle, 1, 1, (float)pos.X, (float)pos.Y);
+        }
     }
+
+    protected override void OnPointerReleased(PointerReleasedEventArgs e)
+    {
+        base.OnPointerReleased(e);
+        if (!RendererState.IsReady) return;
+        var pos = e.GetPosition(this);
+        int btn = e.InitialPressMouseButton == MouseButton.Left ? 0 : 1;
+        NativeRenderer.renderer_on_mouse_button(_handle, btn, 0, (float)pos.X, (float)pos.Y);
+    }
+
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+    {
+        base.OnPointerWheelChanged(e);
+        if (!RendererState.IsReady) return;
+        NativeRenderer.renderer_on_scroll(_handle, (float)e.Delta.Y);
+    }
+
+    // ----- Keyboard input -----
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (!RendererState.IsReady) return;
+
+        int? code = e.Key switch
+        {
+            Key.W => 0,
+            Key.S => 1,
+            Key.A => 2,
+            Key.D => 3,
+            _     => (int?)null
+        };
+
+        if (code.HasValue)
+        {
+            NativeRenderer.renderer_on_key(_handle, code.Value, 1);
+            e.Handled = true;
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.F when !FpsModeActive:
+                NativeRenderer.renderer_set_fps_mode(_handle, 1);
+                NativeRenderer.ShowCursor(false);
+                FpsModeActive = true;
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                NativeRenderer.renderer_set_fps_mode(_handle, 0);
+                NativeRenderer.ShowCursor(true);
+                FpsModeActive = false;
+                _ignoreNextMove = false;
+                e.Handled = true;
+                break;
+            case Key.Delete when SelectedMeshId != -1:
+                NativeRenderer.renderer_remove_mesh(_handle, SelectedMeshId);
+                _suppressHighlightForward = true;
+                SelectedMeshId = -1;
+                _suppressHighlightForward = false;
+                e.Handled = true;
+                break;
+        }
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (!RendererState.IsReady) return;
+
+        int? code = e.Key switch
+        {
+            Key.W => 0,
+            Key.S => 1,
+            Key.A => 2,
+            Key.D => 3,
+            _     => (int?)null
+        };
+
+        if (code.HasValue)
+        {
+            NativeRenderer.renderer_on_key(_handle, code.Value, 0);
+            e.Handled = true;
+        }
+    }
+
+    // ----- Render output -----
 
     public override void Render(DrawingContext context)
     {
         if (_bitmap != null)
             context.DrawImage(_bitmap, new Rect(Bounds.Size));
     }
+
+    // ----- Lifecycle -----
 
     private void InitializeRenderer(int w, int h)
     {
@@ -152,8 +298,16 @@ public sealed class RendererControl : Control
 
     private void StopRenderer()
     {
+        // Exit FPS mode cleanly before tearing down the renderer.
+        if (FpsModeActive)
+        {
+            if (_handle != 0) NativeRenderer.renderer_set_fps_mode(_handle, 0);
+            NativeRenderer.ShowCursor(true);
+            FpsModeActive = false;
+        }
+
         RendererState.IsReady = false;
-        RendererState.Handle = 0;
+        RendererState.Handle  = 0;
 
         _cts?.Cancel();
         _renderThread?.Join();
@@ -221,3 +375,4 @@ public sealed class RendererControl : Control
         InvalidateVisual();
     }
 }
+

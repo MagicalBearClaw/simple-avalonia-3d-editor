@@ -12,7 +12,7 @@ public:
     glm::mat4 GetProjectionMatrix(float fovDeg, float aspect, float nearPlane, float farPlane) const;
 
     // dx/dy are raw pixel deltas (e.g. from mouse move events in FPS mode).
-    void ProcessMouseDelta(float dx, float dy, float sensitivity = 0.1f);
+    void ProcessMouseDelta(float dx, float dy, float sensitivity = 2.65f);
 
     // Move along the camera front/right vectors.  deltaTime in seconds.
     void ProcessKeyboard(bool w, bool s, bool a, bool d, float deltaTime, float speed = 5.0f);
