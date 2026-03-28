@@ -1,0 +1,48 @@
+# CMake build output
+out/
+build/
+
+# .NET build output
+EditorApp/bin/
+EditorApp/obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Rider / JetBrains
+.idea/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!CMakePresets.json
+
+# Compiled binaries
+*.exe
+*.dll
+*.lib
+*.pdb
+*.exp
+*.ilk
+
+# Object files
+*.o
+*.obj
+
+# SPIR-V shaders (compiled at build time)
+*.spv
+
+# vcpkg installed packages (fetched at configure time)
+vcpkg_installed/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

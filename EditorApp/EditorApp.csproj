@@ -1,0 +1,64 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Folder Include="Models\" />
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <CmakePreset Condition="'$(Configuration)' == 'Release'">x64-release</CmakePreset>
+    <CmakePreset Condition="'$(Configuration)' != 'Release'">x64-debug</CmakePreset>
+    <CppBinDir>$(MSBuildProjectDirectory)\..\out\build\$(CmakePreset)\bin</CppBinDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <VsWherePath>$([System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)'))\Microsoft Visual Studio\Installer\vswhere.exe</VsWherePath>
+  </PropertyGroup>
+
+  <Target Name="BuildCppRenderer" BeforeTargets="Build">
+    <Exec Command="&quot;$(VsWherePath)&quot; -latest -prerelease -property installationPath"
+          ConsoleToMSBuild="true" EchoOff="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_VsInstallDir"/>
+    </Exec>
+    <Message Text="Building C++ renderer (cmake preset: $(CmakePreset))..." Importance="high" />
+    <Exec Command="cmd /c &quot;&quot;$(_VsInstallDir)\VC\Auxiliary\Build\vcvarsall.bat&quot; x64 &amp;&amp; cmake --build --preset $(CmakePreset) --target renderer_api&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)\.." />
+  </Target>
+
+  <Target Name="CopyCppDlls" AfterTargets="Build">
+    <Message Text="Copying renderer DLLs to $(OutputPath)..." Importance="high" />
+    <Copy SourceFiles="$(CppBinDir)\renderer.dll;$(CppBinDir)\renderer_api.dll"
+          DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <_ShaderFiles Include="$(CppBinDir)\shaders\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ShaderFiles)"
+          DestinationFiles="@(_ShaderFiles->'$(OutputPath)shaders\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.11" />
+    <!--Condition below is needed to remove Avalonia.Diagnostics package from build output in Release configuration.-->
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.11">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="Dock.Avalonia" Version="11.3.11.22" />
+    <PackageReference Include="Dock.Avalonia.Themes.Fluent" Version="11.3.11.22" />
+    <PackageReference Include="Dock.Model.Mvvm" Version="11.3.11.22" />
+  </ItemGroup>
+</Project>

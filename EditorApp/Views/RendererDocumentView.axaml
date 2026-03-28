@@ -1,0 +1,8 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:EditorApp.Controls"
+             xmlns:vm="using:EditorApp.ViewModels"
+             x:Class="EditorApp.Views.RendererDocumentView"
+             x:DataType="vm:RendererDocumentViewModel">
+    <controls:RendererControl HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+</UserControl>
