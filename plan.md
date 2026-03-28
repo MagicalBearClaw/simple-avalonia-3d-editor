@@ -251,27 +251,322 @@ DockControl.Layout = layout;
 
 ---
 
+## Phase 6: C++ Core Infrastructure
+
+*Blocks all subsequent phases.*
+
+### 6a. Vertex Struct Upgrade
+Replace `struct Vertex { vec2 pos; vec4 color; }` in `TrianglePipeline.h` with a new `Mesh.h`:
+```cpp
+struct Vertex { glm::vec3 pos; glm::vec3 normal; glm::vec4 color; }; // 40 bytes
+```
+
+### 6b. Depth + Stencil Buffer (`OffscreenTarget`)
+- Add `depthImage`, `depthImageView` using `VK_FORMAT_D24_UNORM_S8_UINT` (query `vkGetPhysicalDeviceFormatProperties`; fallback: `D32_SFLOAT_S8_UINT`)
+- Update `Recreate(width, height)` to create/destroy depth resources
+
+### 6c. Render Pass Update
+- Add depth+stencil attachment (`loadOp=CLEAR`, `storeOp=DONT_CARE`, `finalLayout=DEPTH_STENCIL_ATTACHMENT_OPTIMAL`) to the existing `VkRenderPass`
+- Update `VkFramebuffer` creation to include depth image view
+
+### 6d. Descriptor Set Infrastructure
+- `SceneUBO { mat4 view; mat4 proj; }` — device-local buffer, updated per frame via a small staging buffer
+- Descriptor pool + descriptor set layout: binding 0 = UBO, uniform, vertex+fragment stage
+- One descriptor set (single-buffered is fine given `vkQueueWaitIdle` sync)
+
+### 6e. `MeshPipeline` (replaces `TrianglePipeline`)
+New `renderer/src/MeshPipeline.h` + `MeshPipeline.cpp`:
+- 3 vertex attributes: pos (loc=0), normal (loc=1), color (loc=2)
+- Descriptor set layout bound at set=0
+- Push constants: `struct PushConst { mat4 model; int selected; float _pad[3]; }` (80 bytes)
+- Depth test LESS_OR_EQUAL + depth write, backface culling (BACK), CCW winding
+
+### 6f. New Shaders: `mesh.vert` / `mesh.frag`
+- Vertex: `gl_Position = ubo.proj * ubo.view * push.model * vec4(inPos, 1.0)`; pass `flat` color to fragment
+- Fragment: output flat color
+- Add both to `glslangValidator` custom commands in `renderer/CMakeLists.txt`
+
+---
+
+## Phase 7: Mesh Primitives
+
+*Depends on Phase 6.*
+
+### 7a. `MeshAsset` Struct
+```cpp
+struct MeshAsset {
+    std::vector<Vertex>   vertices;
+    std::vector<uint32_t> indices;
+    VkBuffer              vertexBuffer{};
+    VkBuffer              indexBuffer{};
+    VmaAllocation         vertexAllocation{};
+    VmaAllocation         indexAllocation{};
+    void Upload(VulkanContext& ctx); // VMA staging upload
+};
+```
+
+### 7b. `MeshType` Enum
+```cpp
+enum class MeshType { Cube=0, Sphere=1, Pyramid=2, Cylinder=3, Cone=4 };
+```
+
+### 7c. `MeshGenerator` Namespace (`MeshGenerator.h/.cpp`)
+- `GenerateCube()` — 24 verts (4 per face × 6 faces), 36 indices; 6 distinct palette colors
+- `GenerateSphere(stacks=12, slices=16)` — UV sphere; alternating two-color checkerboard by face-index parity
+- `GeneratePyramid()` — 4 triangle sides + 1 quad base; 5 distinct colors; apex duplicated per face
+- `GenerateCylinder(segments=16)` — top cap, bottom cap, side quads; 3 distinct color regions
+- `GenerateCone(segments=16)` — side triangles one color, base cap another
+
+### 7d. `MeshRegistry` in `Renderer`
+`std::array<MeshAsset, 5> m_meshAssets` — initialized in `Renderer` constructor after `VulkanContext` is ready; `asset.Upload(m_context)` for each.
+
+---
+
+## Phase 8: Scene Graph + FPS Camera
+
+*Depends on Phase 7. `FpsCamera` can be written in parallel with Phase 7.*
+
+### 8a. `FpsCamera` (`FpsCamera.h/.cpp`)
+- Fields: `vec3 position`, `float yaw`, `float pitch` (clamped ±89°)
+- `GetViewMatrix() → mat4` via `glm::lookAt(position, position + GetFront(), worldUp)`
+- `ProcessMouseDelta(float dx, float dy, float sensitivity = 0.1f)`
+- `ProcessKeyboard(bool w, bool s, bool a, bool d, float deltaTime, float speed = 5.0f)`
+- `GetProjectionMatrix(float fovDeg, float aspect, float near, float far) → mat4`
+
+### 8b. `MeshInstance` Struct
+```cpp
+struct MeshInstance { int id; MeshType type; glm::mat4 transform; bool selected; };
+```
+
+### 8c. `Scene` Class (`Scene.h/.cpp`)
+- `std::vector<MeshInstance> m_instances`, `int m_nextId`, `int m_selectedId = -1`
+- `AddMesh(MeshType) → int` — places at `vec3(offsetCounter * 2.5f, 0, 0)`, incrementing offset
+- `RemoveMesh(int id)`, `SetSelected(int id)`, `ClearSelection()`, `GetSelectedId() → int`
+
+### 8d. `InputState` in `Renderer`
+```cpp
+struct InputState {
+    bool w, s, a, d;
+    float mouseX, mouseY, lastMouseX, lastMouseY;
+    bool leftButton, rightButton;
+    bool fpsMode;
+};
+```
+Updated by `On*()` C++ methods called from the C API.
+
+### 8e. Per-Frame Update in `RenderFrame`
+- Compute `deltaTime` via `std::chrono::steady_clock`
+- Call `m_camera.ProcessKeyboard(...)` when `fpsMode` active
+- Build `SceneUBO` and upload: `view = camera.GetViewMatrix()`, `proj = camera.GetProjectionMatrix(60°, aspect, 0.1f, 1000.0f)`
+
+---
+
+## Phase 9: CPU Ray Picking
+
+*Depends on Phase 8.*
+
+### 9a. `PickMesh(float screenX, float screenY) → int` in `Renderer`
+1. NDC: `nx = (2*x/w) - 1`, `ny = 1 - (2*y/h)`
+2. View-space ray: `inverse(proj) * vec4(nx, ny, -1, 1)` → perspective divide → normalize
+3. World ray: `mat3(inverse(view)) * rayView`
+4. For each `MeshInstance`: transform ray to model space via `inverse(instance.transform)`; Möller–Trumbore against CPU mesh triangles; track closest `t`
+5. Return closest-hit ID (or -1); call `m_scene.SetSelected(id)`
+
+### 9b. C API Addition
+`renderer_pick_mesh(RendererHandle, float x, float y) → int`
+
+---
+
+## Phase 10: Stencil Selection Outline
+
+*Depends on Phase 8. Parallel with Phases 11 and 12.*
+
+### 10a. `MeshOutlinePipeline` (new `MeshOutlinePipeline.h/.cpp`)
+- Same vertex layout + descriptor set as `MeshPipeline`
+- Push constants: same struct; model matrix scaled by 1.03 to enlarge silhouette
+- Fragment always outputs magenta `vec4(1, 0, 1, 1)`
+- Depth test OFF; stencil test `NOT_EQUAL ref=1`
+- Culling: FRONT (inverted normals trick so outline only shows around the edge)
+
+### 10b. Render-Pass Stencil Configuration
+- **Pass 1** (normal `MeshPipeline` for selected mesh): `stencilTestEnable=true`, `passOp=REPLACE`, `ref=1`
+- **Pass 2** (`MeshOutlinePipeline`): `compareOp=NOT_EQUAL`, `ref=1`
+
+### 10c. Frame Render Order
+1. Draw all non-selected meshes (stencil op = KEEP)
+2. Draw selected mesh with stencil write (`REPLACE ref=1`)
+3. Draw outline pass for selected mesh
+
+---
+
+## Phase 11: Infinite Grid
+
+*Depends on Phase 6. Parallel with Phases 10 and 12.*
+
+### 11a. Shaders: `grid.vert` / `grid.frag`
+- VS: emit 4 corners of a ±500 unit world XZ quad (y=0); transform by `proj * view` only; output world XZ coordinates
+- FS: `fract(worldXZ / gridSpacing)` + `fwidth()` for anti-aliased lines; two scales (1-unit thin, 10-unit thick); X axis red, Z axis blue; alpha fade with camera distance
+
+### 11b. `GridPipeline` (new `GridPipeline.h/.cpp`)
+- No vertex buffer — VS generates quad from `gl_VertexIndex`
+- Depth test LESS_OR_EQUAL, depth write OFF
+- Alpha blend: `SRC_ALPHA / ONE_MINUS_SRC_ALPHA`
+- Rendered before opaque meshes each frame
+
+---
+
+## Phase 12: ImGuizmo Integration
+
+*Depends on Phase 6. Parallel with Phases 10 and 11.*
+
+### 12a. `vcpkg.json` Additions
+```json
+"imgui[vulkan-binding,docking]",
+"imguizmo"
+```
+
+### 12b. ImGui Vulkan Initialization (in `Renderer` constructor)
+- Create dedicated `VkDescriptorPool` for ImGui (combined image sampler pool, size 1000)
+- `ImGui::CreateContext()`
+- Fill `ImGui_ImplVulkan_InitInfo` with device, physical device, queue, render pass, descriptor pool
+- `ImGui_ImplVulkan_Init(&initInfo)`
+- Upload ImGui fonts via a single-submission command buffer
+
+### 12c. Per-Frame ImGui IO
+Manually populate `ImGui::GetIO()` from `InputState` before `ImGui::NewFrame()`:
+`DisplaySize`, `DeltaTime`, `MousePos`, `MouseDown[0/1]`, `MouseWheel`
+
+### 12d. ImGuizmo Per Frame (inside render pass, after mesh draws)
+```cpp
+ImGui_ImplVulkan_NewFrame();
+ImGui::NewFrame();
+ImGuizmo::BeginFrame();
+ImGuizmo::SetOrthographic(false);
+ImGuizmo::SetRect(0, 0, width, height);
+if (selectedInstance) {
+    ImGuizmo::Manipulate(
+        glm::value_ptr(view), glm::value_ptr(proj),
+        m_gizmoOp, ImGuizmo::LOCAL,
+        glm::value_ptr(selectedInstance->transform));
+}
+ImGui::Render();
+ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuf);
+```
+
+### 12e. C API Additions
+- `renderer_set_gizmo_operation(RendererHandle, int op)` — 0=translate, 1=rotate, 2=scale
+- `renderer_is_gizmo_hovered(RendererHandle) → bool` — returns `ImGuizmo::IsOver() || ImGuizmo::IsUsing()`
+
+### 12f. CMake Linking
+Add `imgui::imgui` and `imguizmo::imguizmo` to `renderer` target in `renderer/CMakeLists.txt`.
+
+---
+
+## Phase 13: C API Extensions
+
+All added to `renderer_api/include/renderer_api.h` and `renderer_api/src/renderer_api.cpp`. Each function casts `RendererHandle` to `Renderer*` and delegates.
+
+| Function | Added in Phase |
+|---|---|
+| `renderer_add_mesh(handle, int type) → int` | 7 |
+| `renderer_remove_mesh(handle, int id)` | 8 |
+| `renderer_get_selected_mesh_id(handle) → int` | 8 |
+| `renderer_pick_mesh(handle, float x, float y) → int` | 9 |
+| `renderer_on_mouse_move(handle, float x, float y)` | 8 |
+| `renderer_on_mouse_button(handle, int btn, bool pressed, float x, float y)` | 8 |
+| `renderer_on_key(handle, int key, bool pressed)` | 8 (key codes: 0=W, 1=S, 2=A, 3=D, 4=Delete, 5=F, 6=Esc) |
+| `renderer_on_scroll(handle, float delta)` | 8 |
+| `renderer_set_fps_mode(handle, bool active)` | 8 |
+| `renderer_set_gizmo_operation(handle, int op)` | 12 |
+| `renderer_is_gizmo_hovered(handle) → bool` | 12 |
+
+---
+
+## Phase 14: Avalonia App Updates
+
+*Depends on Phase 13.*
+
+### 14a. `NativeRenderer.cs` — New P/Invoke Stubs
+Add `[LibraryImport("renderer_api.dll")]` stubs for all Phase 13 functions. Also add Win32 stubs:
+```csharp
+[DllImport("user32.dll")] static extern bool ShowCursor(bool bShow);
+[DllImport("user32.dll")] static extern bool SetCursorPos(int X, int Y);
+```
+
+### 14b. `PrimitivesToolViewModel : Tool` (new file)
+- 5 `ICommand` properties: `AddCube`, `AddSphere`, `AddPyramid`, `AddCylinder`, `AddCone`
+- Each calls `renderer_add_mesh(RendererState.Handle, (int)MeshType.X)`
+
+### 14c. `PrimitivesToolView.axaml` (new file)
+5 `Button`s stacked vertically, bound to the `Add*` commands.
+
+### 14d. `EditorDockFactory` Update
+Add `PrimitivesToolViewModel` as a second item in the left `ToolDock` alongside `ScenePropertiesViewModel`.
+
+### 14e. `RendererDocumentView.axaml` Overlay
+Wrap `RendererControl` in a `Grid`. Add:
+- Top row: `StackPanel` (Horizontal) of 3 `ToggleButton`s — "T" (Translate), "R" (Rotate), "S" (Scale) — bound to `GizmoOperation` in `RendererDocumentViewModel`
+- Bottom row: `TextBlock "FPS MODE"` — visibility bound to `FpsModeActive`
+
+### 14f. `RendererDocumentViewModel` Extensions
+- `GizmoOperation` observable int property → calls `renderer_set_gizmo_operation` on change
+- `SelectedMeshId` observable int property (-1 = none)
+- `FpsModeActive` observable bool property
+
+### 14g. `RendererControl.cs` — Full Input Wiring
+- `OnPointerPressed`: call `Focus()`; left-click (not FPS mode, gizmo not hovered) → `renderer_pick_mesh(x,y)` → update `ViewModel.SelectedMeshId`
+- `OnPointerMoved`: in normal mode → `renderer_on_mouse_move(x, y)`; in FPS mode → compute delta from window center, call `renderer_on_mouse_move(dx, dy)`, call Win32 `SetCursorPos` to re-center cursor
+- `OnKeyDown`:
+  - Map Avalonia `Key` enum to int key codes; call `renderer_on_key`
+  - `Key.F` → call `renderer_set_fps_mode(true)`, `ShowCursor(false)`, set `FpsModeActive = true`
+  - `Key.Escape` → exit FPS mode, `ShowCursor(true)`, set `FpsModeActive = false`
+  - `Key.Delete` with `SelectedMeshId != -1` → `renderer_remove_mesh(handle, selectedId)`, clear `SelectedMeshId`
+- `OnKeyUp`: forward to `renderer_on_key`
+- `OnScrollChanged`: call `renderer_on_scroll`
+
+---
+
 ## Relevant Files
 
-- `CMakeLists.txt` — root, adds `renderer/`, `renderer_api/`, `renderer_test/`
-- `vcpkg.json` — vulkan-headers, volk, vulkan-memory-allocator, glm, glslang, sdl3
-- `CMakePresets.json`
-- `renderer/CMakeLists.txt` + `renderer/src/*.cpp` + `renderer/include/Renderer.h`
-- `renderer/shaders/triangle.vert.glsl` + `triangle.frag.glsl`
-- `renderer_test/CMakeLists.txt` + `renderer_test/src/main.cpp`
-- `renderer_api/CMakeLists.txt` + `renderer_api/include/renderer_api.h` + `renderer_api/src/renderer_api.cpp`
-- `EditorApp/EditorApp.csproj`
-- `EditorApp/App.axaml` + `App.axaml.cs`
-- `EditorApp/NativeRenderer.cs`
-- `EditorApp/Controls/RendererControl.cs`
-- `EditorApp/Dock/EditorDockFactory.cs`
-- `EditorApp/ViewModels/{MainViewModel,RendererDocumentViewModel,BackgroundColorToolViewModel,VertexColorsToolViewModel}.cs`
-- `EditorApp/Views/{MainWindow,RendererView,BackgroundColorToolView,VertexColorsToolView}.axaml`
+**C++ Renderer**
+- `renderer/include/Renderer.h` — extend with scene/camera/input methods
+- `renderer/src/Renderer.cpp` — major extension
+- `renderer/src/OffscreenTarget.h/.cpp` — add depth+stencil
+- `renderer/src/VulkanContext.h/.cpp` — add descriptor pool infrastructure
+- `renderer/src/TrianglePipeline.h/.cpp` — replaced by `MeshPipeline`
+- `renderer/src/MeshPipeline.h/.cpp` — new
+- `renderer/src/MeshGenerator.h/.cpp` — new
+- `renderer/src/FpsCamera.h/.cpp` — new
+- `renderer/src/Scene.h/.cpp` — new
+- `renderer/src/MeshOutlinePipeline.h/.cpp` — new
+- `renderer/src/GridPipeline.h/.cpp` — new
+- `renderer/shaders/mesh.vert`, `mesh.frag` — new
+- `renderer/shaders/grid.vert`, `grid.frag` — new
+- `renderer/CMakeLists.txt` — new source files, new shader targets, link imgui+imguizmo
+
+**C API**
+- `renderer_api/include/renderer_api.h` — extend
+- `renderer_api/src/renderer_api.cpp` — extend
+
+**Build**
+- `vcpkg.json` — add `imgui[vulkan-binding,docking]`, `imguizmo`
+- `CMakeLists.txt` — no changes needed
+
+**Avalonia**
+- `EditorApp/NativeRenderer.cs` — new P/Invoke stubs + Win32 cursor stubs
+- `EditorApp/RendererState.cs` — extend with SelectedMeshId, FpsModeActive
+- `EditorApp/Controls/RendererControl.cs` — full input wiring
+- `EditorApp/ViewModels/RendererDocumentViewModel.cs` — GizmoOperation, SelectedMeshId, FpsModeActive
+- `EditorApp/ViewModels/PrimitivesToolViewModel.cs` — new
+- `EditorApp/Views/PrimitivesToolView.axaml` — new
+- `EditorApp/Views/RendererDocumentView.axaml` — gizmo toolbar + FPS mode indicator overlay
+- `EditorApp/Dock/EditorDockFactory.cs` — add PrimitivesToolViewModel
 
 ---
 
 ## Verification
 
+**Phases 1–5 (original)**
 1. `cmake --preset windows-debug && cmake --build build/` → produces `renderer.dll` + `renderer_api.dll`
 2. Run `renderer_test.exe` → colored triangle in SDL3 window, background/vertex changes work
 3. `dotnet build EditorApp/` → no errors
@@ -280,12 +575,25 @@ DockControl.Layout = layout;
 6. Vertex color tool changes triangle vertex colors live
 7. Resize main window → renderer + bitmap resize without crash
 
+**Phases 6–14 (new)**
+8. CMake builds without errors; all 4 new shader files (`mesh.vert/frag`, `grid.vert/frag`) compile to SPIR-V
+9. Each primitive (Cube/Sphere/Pyramid/Cylinder/Cone) renders with visually distinct per-face colors; sphere shows alternating two-color checkerboard
+10. Primitives tool panel buttons each add a new instance; multiple clicks add multiple instances at incrementing X offsets
+11. FPS mode: F key hides cursor, WASD moves camera, mouse look works, pitch clamped ±89°, Esc exits and restores cursor
+12. Left-click on mesh selects it; magenta stencil outline appears; clicking empty space deselects
+13. Delete key removes selected mesh from scene
+14. ImGuizmo gizmo appears when a mesh is selected; T/R/S toolbar buttons switch operation; dragging gizmo updates mesh transform
+15. Gizmo drag does NOT trigger FPS camera movement (`renderer_is_gizmo_hovered` guard)
+16. Infinite grid visible at Y=0; X axis red, Z axis blue; grid fades with distance
+
 ---
 
 ## Scalability Notes
 
-- **Input**: Avalonia owns input entirely. Camera controls via `PointerPressed/Moved` on `RendererControl`. No Win32 HWND focus stealing.
-- **Gizmos**: Use **ImGuizmo** — add `imgui` (with `imgui_impl_vulkan`) and `imguizmo` to vcpkg. Integrate as a second draw pass in the existing Vulkan command buffer after the triangle draw. Gizmo pixels bake into the offscreen image before the staging copy, so no changes to the Avalonia side. Input forwarded: `RendererControl` pointer/key events → C API calls (`renderer_set_mouse_pos`, `renderer_set_mouse_button`, etc.) → `ImGui::GetIO()` on C++ side before `ImGui::NewFrame()`.
+- **Input**: Avalonia owns input entirely. Key/mouse events forwarded via C API to `InputState` in C++. No Win32 HWND focus stealing.
+- **FPS cursor lock**: Win32 `SetCursorPos` re-centers cursor to viewport center each frame in FPS mode. Use `Visual.PointToScreen` in Avalonia to get viewport center in screen coordinates. Windows-only (matches current platform target).
+- **ImGui render pass compatibility**: `ImGui_ImplVulkan` must be initialized with the exact `VkRenderPass` used at draw time. If render pass is recreated on resize, ImGui must be re-initialized. Avoid recreating the render pass on resize — only recreate the framebuffer and depth resources.
+- **Stencil format availability**: `D24_UNORM_S8_UINT` not guaranteed on all Vulkan devices. Query `vkGetPhysicalDeviceFormatProperties` at init; fall back to `D32_SFLOAT_S8_UINT`.
 - **Upgrade path**: Replace `WriteableBitmap` CPU readback with `VK_KHR_external_memory_win32` + DXGI shared handle + Avalonia D3D11 surface (zero-copy) when performance demands it.
-- **Multi-viewport**: Each Dock `Document` tab gets its own `RendererControl` instance with its own `RendererHandle`.
+- **Multi-viewport**: Each Dock `Document` tab can have its own `RendererControl` with its own `RendererHandle` and independent `Scene`.
 - **Keyboard shortcuts**: Avalonia `KeyBindings` on the `Window` work without interference — no competing Win32 window.
