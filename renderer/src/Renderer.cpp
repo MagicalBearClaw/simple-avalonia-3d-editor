@@ -4,6 +4,7 @@
 #include "OffscreenTarget.h"
 #include "MeshPipeline.h"
 #include "MeshOutlinePipeline.h"
+#include "GridPipeline.h"
 #include "Mesh.h"
 #include "MeshGenerator.h"
 #include "FpsCamera.h"
@@ -148,6 +149,10 @@ Renderer::Renderer(uint32_t width, uint32_t height)
     m_outlinePipeline = std::make_unique<MeshOutlinePipeline>(
         *m_ctx, *m_target, m_pipeline->pipelineLayout);
 
+    // Grid pipeline also borrows pipelineLayout from MeshPipeline
+    m_gridPipeline = std::make_unique<GridPipeline>(
+        *m_ctx, *m_target, m_pipeline->pipelineLayout);
+
     // ----- Mesh registry — generate all primitive types and upload to GPU -----
     m_meshes = std::make_unique<MeshRegistry>();
     m_meshes->assets[static_cast<int>(MeshType::Cube)]     = MeshGenerator::GenerateCube();
@@ -178,6 +183,7 @@ Renderer::~Renderer()
         m_meshes.reset();
     }
 
+    m_gridPipeline.reset();
     m_outlinePipeline.reset();
     m_pipeline.reset();
 
@@ -315,7 +321,11 @@ void Renderer::RenderFrame()
         vkCmdDrawIndexed(m_cmdBuf, static_cast<uint32_t>(asset.indices.size()), 1, 0, 0, 0);
     }
 
-    // --- Pass 3: outline — front-cull scaled mesh; only draws where stencil != 1 ---
+    // --- Pass 3: Grid (transparent, depth test ON, depth write OFF, no stencil) ---
+    m_gridPipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
+    vkCmdDraw(m_cmdBuf, 6, 1, 0, 0);
+
+    // --- Pass 4: outline — front-cull scaled mesh; only draws where stencil != 1 ---
     if (selectedInst) {
         const MeshAsset& asset = m_meshes->assets[static_cast<int>(selectedInst->type)];
 

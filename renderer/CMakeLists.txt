@@ -46,8 +46,29 @@ add_custom_command(
     VERBATIM
 )
 
+set(GRID_VERT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/grid.vert")
+set(GRID_VERT_SPV "${SHADER_OUTPUT_DIR}/grid.vert.spv")
+set(GRID_FRAG_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/grid.frag")
+set(GRID_FRAG_SPV "${SHADER_OUTPUT_DIR}/grid.frag.spv")
+
+add_custom_command(
+    OUTPUT  "${GRID_VERT_SPV}"
+    COMMAND "${GLSLANG_VALIDATOR}" -V "${GRID_VERT_SRC}" -o "${GRID_VERT_SPV}"
+    DEPENDS "${GRID_VERT_SRC}"
+    COMMENT "Compiling grid.vert -> SPIR-V"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT  "${GRID_FRAG_SPV}"
+    COMMAND "${GLSLANG_VALIDATOR}" -V "${GRID_FRAG_SRC}" -o "${GRID_FRAG_SPV}"
+    DEPENDS "${GRID_FRAG_SRC}"
+    COMMENT "Compiling grid.frag -> SPIR-V"
+    VERBATIM
+)
+
 add_custom_target(renderer_shaders ALL
-    DEPENDS "${VERT_SPV}" "${FRAG_SPV}" "${OUTLINE_FRAG_SPV}"
+    DEPENDS "${VERT_SPV}" "${FRAG_SPV}" "${OUTLINE_FRAG_SPV}" "${GRID_VERT_SPV}" "${GRID_FRAG_SPV}"
 )
 
 # ---------------------------------------------------------------------------
@@ -61,6 +82,7 @@ target_sources(renderer PRIVATE
     src/OffscreenTarget.cpp
     src/MeshPipeline.cpp
     src/MeshOutlinePipeline.cpp
+    src/GridPipeline.cpp
     src/MeshGenerator.cpp
     src/FpsCamera.cpp
     src/Scene.cpp

@@ -22,6 +22,7 @@ struct VulkanContext;
 struct OffscreenTarget;
 struct MeshPipeline;
 struct MeshOutlinePipeline;
+struct GridPipeline;
 struct MeshRegistry; // private implementation detail — defined in Renderer.cpp
 class  FpsCamera;
 class  Scene;
@@ -76,6 +77,7 @@ private:
     std::unique_ptr<OffscreenTarget> m_target;
     std::unique_ptr<MeshPipeline>        m_pipeline;
     std::unique_ptr<MeshOutlinePipeline> m_outlinePipeline;
+    std::unique_ptr<GridPipeline>        m_gridPipeline;
     std::unique_ptr<MeshRegistry>        m_meshes;
     std::unique_ptr<FpsCamera>       m_camera;
     std::unique_ptr<Scene>           m_scene;
