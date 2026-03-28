@@ -381,21 +381,159 @@ Updated by `On*()` C++ methods called from the C API.
 
 *Depends on Phase 8. Parallel with Phases 11 and 12.*
 
-### 10a. `MeshOutlinePipeline` (new `MeshOutlinePipeline.h/.cpp`)
-- Same vertex layout + descriptor set as `MeshPipeline`
-- Push constants: same struct; model matrix scaled by 1.03 to enlarge silhouette
-- Fragment always outputs magenta `vec4(1, 0, 1, 1)`
-- Depth test OFF; stencil test `NOT_EQUAL ref=1`
-- Culling: FRONT (inverted normals trick so outline only shows around the edge)
+### Context / Pre-conditions
+- `OffscreenTarget` already owns a depth+stencil image and the render pass already issues `stencilLoadOp=CLEAR` (value=0) at the start of each frame — **no render pass changes required**.
+- `MeshPipeline` currently has a single `VkPipeline` with stencil disabled. A second pipeline variant with stencil write must be added to the same struct.
+- The `RenderFrame` loop currently draws all instances in one pass; it must be split into three ordered passes.
 
-### 10b. Render-Pass Stencil Configuration
-- **Pass 1** (normal `MeshPipeline` for selected mesh): `stencilTestEnable=true`, `passOp=REPLACE`, `ref=1`
-- **Pass 2** (`MeshOutlinePipeline`): `compareOp=NOT_EQUAL`, `ref=1`
+---
 
-### 10c. Frame Render Order
-1. Draw all non-selected meshes (stencil op = KEEP)
-2. Draw selected mesh with stencil write (`REPLACE ref=1`)
-3. Draw outline pass for selected mesh
+### 10a. New shader: `renderer/shaders/outline.frag`
+Ultra-minimal fragment shader — no inputs required, always outputs magenta:
+```glsl
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(1.0, 0.0, 1.0, 1.0); }
+```
+Add a `add_custom_command` block to `renderer/CMakeLists.txt` for `outline.frag → outline.frag.spv`, add to the `renderer_shaders` target dependency list.
+
+---
+
+### 10b. `MeshPipeline` — add stencil-write variant (`MeshPipeline.h/.cpp`)
+Add a second `VkPipeline pipelineStencilWrite = VK_NULL_HANDLE;` member.
+
+Create it in the constructor immediately after `pipeline`, differing **only** in the `VkPipelineDepthStencilStateCreateInfo`:
+```cpp
+// pipelineStencilWrite — same as pipeline but stencil writes enabled
+VkStencilOpState stencilFront{};
+stencilFront.failOp      = VK_STENCIL_OP_KEEP;
+stencilFront.passOp      = VK_STENCIL_OP_REPLACE;
+stencilFront.depthFailOp = VK_STENCIL_OP_KEEP;
+stencilFront.compareOp   = VK_COMPARE_OP_ALWAYS;
+stencilFront.compareMask = 0xFF;
+stencilFront.writeMask   = 0xFF;
+stencilFront.reference   = 1;
+
+VkPipelineDepthStencilStateCreateInfo dsWrite{};
+dsWrite.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+dsWrite.depthTestEnable  = VK_TRUE;
+dsWrite.depthWriteEnable = VK_TRUE;
+dsWrite.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+dsWrite.stencilTestEnable= VK_TRUE;
+dsWrite.front            = stencilFront;
+dsWrite.back             = stencilFront; // same for back faces
+```
+Reuse the same `pipelineLayout`, vertex input, raster, etc. — only swap `pDepthStencilState`.
+
+Add method `void BindAndSetupForStencilWrite(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const;` — identical to `BindAndSetup` but binds `pipelineStencilWrite`.
+
+Destroy `pipelineStencilWrite` in the destructor before `pipelineLayout`.
+
+---
+
+### 10c. `MeshOutlinePipeline` (new `renderer/src/MeshOutlinePipeline.h/.cpp`)
+Reuses `mesh.vert.spv` (same vertex layout, same transforms) and `outline.frag.spv`.
+
+**Same `pipelineLayout`** as `MeshPipeline` (same push constant struct + same descriptor set layout) — pass the *already-created* `pipelineLayout` from `MeshPipeline` into the constructor to avoid duplication.
+
+Constructor signature:
+```cpp
+MeshOutlinePipeline(VulkanContext& ctx, OffscreenTarget& target,
+                    VkPipelineLayout sharedLayout);
+```
+`MeshOutlinePipeline` stores the borrowed `sharedLayout` but does **not** own it (no destroy on destruct).
+
+Pipeline state differs from `MeshPipeline` in three places:
+| Setting | Value |
+|---|---|
+| Fragment shader | `outline.frag.spv` |
+| `cullMode` | `VK_CULL_MODE_FRONT_BIT` (inverted normals — outline only shows around edges) |
+| Depth+stencil | depth test OFF, depth write OFF; stencil test ON (`compareOp=NOT_EQUAL`, `ref=1`, `compareMask=0xFF`, `writeMask=0x00`, `passOp=KEEP`) |
+
+Add method `void BindAndSetup(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const;`
+
+---
+
+### 10d. `Renderer` changes (`Renderer.h` / `Renderer.cpp`)
+
+**Header (`Renderer.h`)**: add forward declaration `struct MeshOutlinePipeline;` and member:
+```cpp
+std::unique_ptr<MeshOutlinePipeline> m_outlinePipeline;
+```
+
+**Constructor (`Renderer.cpp`)**: after `m_pipeline` is created, add:
+```cpp
+m_outlinePipeline = std::make_unique<MeshOutlinePipeline>(
+    *m_ctx, *m_target, m_pipeline->pipelineLayout);
+```
+
+**Destructor**: add `m_outlinePipeline.reset();` before `m_pipeline.reset();`.
+
+**`RenderFrame` — split the single draw loop into three ordered passes:**
+```cpp
+const int highlightedId = m_scene->GetHighlightedMeshId();
+const MeshInstance* selectedInst = nullptr;
+for (const auto& inst : m_scene->GetInstances())
+    if (inst.id == highlightedId) { selectedInst = &inst; break; }
+
+// --- Pass 1: all non-selected meshes (regular pipeline, stencil disabled) ---
+m_pipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
+vkCmdSetViewport(m_cmdBuf, 0, 1, &viewport);
+vkCmdSetScissor(m_cmdBuf, 0, 1, &scissor);
+for (const auto& inst : m_scene->GetInstances()) {
+    if (inst.id == highlightedId) continue;
+    // push model + selected=0; bind + draw
+}
+
+// --- Pass 2: selected mesh with stencil write ---
+if (selectedInst) {
+    m_pipeline->BindAndSetupForStencilWrite(m_cmdBuf, m_sceneSet);
+    // push model + selected=1; bind + draw
+}
+
+// --- Pass 3: outline (stencil NOT_EQUAL, cull FRONT, magenta) ---
+if (selectedInst) {
+    m_outlinePipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
+    MeshPushConst pc{};
+    pc.model    = glm::scale(selectedInst->transform, glm::vec3(1.03f));
+    pc.selected = 1;
+    vkCmdPushConstants(m_cmdBuf, m_pipeline->pipelineLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0, sizeof(MeshPushConst), &pc);
+    // bind vertex/index buffer of the selected mesh; vkCmdDrawIndexed
+}
+```
+Viewport and scissor only need to be set once (before Pass 1) since they are shared dynamic state and don't change.
+
+---
+
+### 10e. `renderer/CMakeLists.txt` changes
+1. Add two new `add_custom_command` blocks for `outline.frag → outline.frag.spv`.
+2. Add `"${SHADER_OUTPUT_DIR}/outline.frag.spv"` to the `renderer_shaders` target.
+3. Add `src/MeshOutlinePipeline.cpp` to `target_sources(renderer PRIVATE ...)`.
+
+---
+
+### Files changed in Phase 10
+| File | Change |
+|---|---|
+| `renderer/shaders/outline.frag` | **new** — magenta output shader |
+| `renderer/src/MeshOutlinePipeline.h` | **new** |
+| `renderer/src/MeshOutlinePipeline.cpp` | **new** |
+| `renderer/src/MeshPipeline.h` | add `pipelineStencilWrite` + `BindAndSetupForStencilWrite` |
+| `renderer/src/MeshPipeline.cpp` | create/destroy second pipeline |
+| `renderer/include/Renderer.h` | add `m_outlinePipeline` |
+| `renderer/src/Renderer.cpp` | construct/destroy outline pipeline; 3-pass `RenderFrame` |
+| `renderer/CMakeLists.txt` | add `outline.frag` shader target + `MeshOutlinePipeline.cpp` source |
+
+---
+
+### Verification
+- Select a mesh → magenta outline ring appears around it; no outline when nothing is selected.
+- Outline thickness is uniform regardless of camera orientation (inverted-normals cull trick).
+- Non-selected meshes are unaffected — stencil buffer for those pixels stays at 0.
+- Outline does not bleed through other meshes (depth test is OFF: outline draws over depth, but stencil NOT_EQUAL prevents it from rendering where the mesh itself was drawn — this is the correct/expected behaviour).
+- Resize and FPS camera still work without regression.
 
 ---
 

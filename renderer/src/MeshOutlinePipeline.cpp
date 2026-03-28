@@ -1,4 +1,4 @@
-#include "MeshPipeline.h"
+#include "MeshOutlinePipeline.h"
 #include "VulkanContext.h"
 #include "OffscreenTarget.h"
 #include "Mesh.h"
@@ -8,9 +8,6 @@
 #include <vector>
 #include <array>
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 static std::vector<uint32_t> loadSpirv(const char* path)
 {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -39,39 +36,20 @@ static VkShaderModule createModule(VkDevice device, const std::vector<uint32_t>&
 }
 
 // ---------------------------------------------------------------------------
-// MeshPipeline constructor
+// MeshOutlinePipeline constructor
 // ---------------------------------------------------------------------------
-MeshPipeline::MeshPipeline(VulkanContext& ctx, OffscreenTarget& target,
-                           VkDescriptorSetLayout sceneLayout)
-    : m_device(ctx.device)
+MeshOutlinePipeline::MeshOutlinePipeline(VulkanContext& ctx, OffscreenTarget& target,
+                                         VkPipelineLayout sharedLayout)
+    : m_device(ctx.device), m_pipelineLayout(sharedLayout)
 {
-    // Load shaders first — throws early before any Vulkan object creation.
+    // Reuse mesh.vert (same vertex layout + transforms) + outline.frag (magenta output)
     auto vertCode = loadSpirv("shaders/mesh.vert.spv");
-    auto fragCode = loadSpirv("shaders/mesh.frag.spv");
-
-    // ----- Pipeline layout -----
-    {
-        VkPushConstantRange pcRange{};
-        pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        pcRange.offset     = 0;
-        pcRange.size       = sizeof(MeshPushConst);
-
-        VkPipelineLayoutCreateInfo ci{};
-        ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        ci.setLayoutCount         = 1;
-        ci.pSetLayouts            = &sceneLayout;
-        ci.pushConstantRangeCount = 1;
-        ci.pPushConstantRanges    = &pcRange;
-
-        if (vkCreatePipelineLayout(ctx.device, &ci, nullptr, &pipelineLayout) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create mesh pipeline layout");
-    }
+    auto fragCode = loadSpirv("shaders/outline.frag.spv");
 
     VkShaderModule vertModule = createModule(ctx.device, vertCode);
     VkShaderModule fragModule = createModule(ctx.device, fragCode);
 
-    // ----- Shared pipeline state -----
-
+    // Vertex input — identical to MeshPipeline (Vertex struct, 40 bytes)
     VkVertexInputBindingDescription binding{};
     binding.binding   = 0;
     binding.stride    = sizeof(Vertex);
@@ -100,8 +78,7 @@ MeshPipeline::MeshPipeline(VulkanContext& ctx, OffscreenTarget& target,
     inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     std::array<VkDynamicState, 2> dynamicStates = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR
     };
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -113,16 +90,35 @@ MeshPipeline::MeshPipeline(VulkanContext& ctx, OffscreenTarget& target,
     viewportState.viewportCount = 1;
     viewportState.scissorCount  = 1;
 
+    // FRONT cull — inverted normals trick; outline only shows around the silhouette edge
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode    = VK_CULL_MODE_BACK_BIT;
+    raster.cullMode    = VK_CULL_MODE_FRONT_BIT;
     raster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth   = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo msaa{};
     msaa.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // Depth OFF; stencil NOT_EQUAL ref=1 — only draws where the mesh was NOT drawn
+    VkStencilOpState stencilTest{};
+    stencilTest.failOp      = VK_STENCIL_OP_KEEP;
+    stencilTest.passOp      = VK_STENCIL_OP_KEEP;
+    stencilTest.depthFailOp = VK_STENCIL_OP_KEEP;
+    stencilTest.compareOp   = VK_COMPARE_OP_NOT_EQUAL;
+    stencilTest.compareMask = 0xFF;
+    stencilTest.writeMask   = 0x00;
+    stencilTest.reference   = 1;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable   = VK_FALSE;
+    depthStencil.depthWriteEnable  = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_TRUE;
+    depthStencil.front             = stencilTest;
+    depthStencil.back              = stencilTest;
 
     VkPipelineColorBlendAttachmentState blendAttach{};
     blendAttach.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -152,77 +148,35 @@ MeshPipeline::MeshPipeline(VulkanContext& ctx, OffscreenTarget& target,
     ci.pViewportState      = &viewportState;
     ci.pRasterizationState = &raster;
     ci.pMultisampleState   = &msaa;
+    ci.pDepthStencilState  = &depthStencil;
     ci.pColorBlendState    = &blend;
     ci.pDynamicState       = &dynamicState;
-    ci.layout              = pipelineLayout;
+    ci.layout              = m_pipelineLayout;
     ci.renderPass          = target.renderPass;
     ci.subpass             = 0;
 
-    // ----- Pipeline 1: no stencil (default) -----
-    {
-        VkPipelineDepthStencilStateCreateInfo ds{};
-        ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        ds.depthTestEnable  = VK_TRUE;
-        ds.depthWriteEnable = VK_TRUE;
-        ds.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
-        ci.pDepthStencilState = &ds;
-
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create mesh graphics pipeline");
-    }
-
-    // ----- Pipeline 2: stencil write REPLACE ref=1 (for selected mesh) -----
-    {
-        VkStencilOpState stencilWrite{};
-        stencilWrite.failOp      = VK_STENCIL_OP_KEEP;
-        stencilWrite.passOp      = VK_STENCIL_OP_REPLACE;
-        stencilWrite.depthFailOp = VK_STENCIL_OP_KEEP;
-        stencilWrite.compareOp   = VK_COMPARE_OP_ALWAYS;
-        stencilWrite.compareMask = 0xFF;
-        stencilWrite.writeMask   = 0xFF;
-        stencilWrite.reference   = 1;
-
-        VkPipelineDepthStencilStateCreateInfo ds{};
-        ds.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        ds.depthTestEnable   = VK_TRUE;
-        ds.depthWriteEnable  = VK_TRUE;
-        ds.depthCompareOp    = VK_COMPARE_OP_LESS_OR_EQUAL;
-        ds.stencilTestEnable = VK_TRUE;
-        ds.front             = stencilWrite;
-        ds.back              = stencilWrite;
-        ci.pDepthStencilState = &ds;
-
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipelineStencilWrite) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create mesh stencil-write pipeline");
-    }
+    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create mesh outline pipeline");
 
     vkDestroyShaderModule(ctx.device, vertModule, nullptr);
     vkDestroyShaderModule(ctx.device, fragModule, nullptr);
 }
 
 // ---------------------------------------------------------------------------
-// MeshPipeline destructor
+// MeshOutlinePipeline destructor
 // ---------------------------------------------------------------------------
-MeshPipeline::~MeshPipeline()
+MeshOutlinePipeline::~MeshOutlinePipeline()
 {
-    vkDestroyPipeline(m_device, pipelineStencilWrite, nullptr);
     vkDestroyPipeline(m_device, pipeline, nullptr);
-    vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+    // m_pipelineLayout is borrowed from MeshPipeline — not destroyed here
 }
 
 // ---------------------------------------------------------------------------
-// BindAndSetup / BindAndSetupForStencilWrite
+// BindAndSetup
 // ---------------------------------------------------------------------------
-void MeshPipeline::BindAndSetup(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const
+void MeshOutlinePipeline::BindAndSetup(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const
 {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-                            0, 1, &sceneSet, 0, nullptr);
-}
-
-void MeshPipeline::BindAndSetupForStencilWrite(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const
-{
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineStencilWrite);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout,
                             0, 1, &sceneSet, 0, nullptr);
 }

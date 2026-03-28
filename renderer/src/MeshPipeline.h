@@ -14,15 +14,19 @@ struct MeshPushConst {
 };
 
 struct MeshPipeline {
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline       pipeline       = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout       = VK_NULL_HANDLE;
+    VkPipeline       pipeline             = VK_NULL_HANDLE; // default: no stencil
+    VkPipeline       pipelineStencilWrite = VK_NULL_HANDLE; // stencil REPLACE ref=1
 
     MeshPipeline(VulkanContext& ctx, OffscreenTarget& target, VkDescriptorSetLayout sceneLayout);
     ~MeshPipeline();
 
-    // Record pipeline bind + descriptor set bind into the provided command buffer.
-    // Caller is responsible for setting dynamic viewport/scissor afterwards.
+    // Bind default pipeline + scene descriptor set. No stencil writes.
     void BindAndSetup(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const;
+
+    // Bind stencil-write pipeline + scene descriptor set.
+    // Writes ref=1 to stencil for every passing fragment (used for selected mesh outline).
+    void BindAndSetupForStencilWrite(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const;
 
     MeshPipeline(const MeshPipeline&) = delete;
     MeshPipeline& operator=(const MeshPipeline&) = delete;

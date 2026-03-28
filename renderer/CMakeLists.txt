@@ -35,8 +35,19 @@ add_custom_command(
     VERBATIM
 )
 
+set(OUTLINE_FRAG_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/outline.frag")
+set(OUTLINE_FRAG_SPV "${SHADER_OUTPUT_DIR}/outline.frag.spv")
+
+add_custom_command(
+    OUTPUT  "${OUTLINE_FRAG_SPV}"
+    COMMAND "${GLSLANG_VALIDATOR}" -V "${OUTLINE_FRAG_SRC}" -o "${OUTLINE_FRAG_SPV}"
+    DEPENDS "${OUTLINE_FRAG_SRC}"
+    COMMENT "Compiling outline.frag -> SPIR-V"
+    VERBATIM
+)
+
 add_custom_target(renderer_shaders ALL
-    DEPENDS "${VERT_SPV}" "${FRAG_SPV}"
+    DEPENDS "${VERT_SPV}" "${FRAG_SPV}" "${OUTLINE_FRAG_SPV}"
 )
 
 # ---------------------------------------------------------------------------
@@ -49,6 +60,7 @@ target_sources(renderer PRIVATE
     src/VulkanContext.cpp
     src/OffscreenTarget.cpp
     src/MeshPipeline.cpp
+    src/MeshOutlinePipeline.cpp
     src/MeshGenerator.cpp
     src/FpsCamera.cpp
     src/Scene.cpp

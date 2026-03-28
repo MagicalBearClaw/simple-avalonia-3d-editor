@@ -3,6 +3,7 @@
 #include "VulkanContext.h"
 #include "OffscreenTarget.h"
 #include "MeshPipeline.h"
+#include "MeshOutlinePipeline.h"
 #include "Mesh.h"
 #include "MeshGenerator.h"
 #include "FpsCamera.h"
@@ -143,6 +144,10 @@ Renderer::Renderer(uint32_t width, uint32_t height)
     // ----- MeshPipeline (depends on render pass + scene layout) -----
     m_pipeline = std::make_unique<MeshPipeline>(*m_ctx, *m_target, m_sceneSetLayout);
 
+    // Outline pipeline borrows pipelineLayout from MeshPipeline
+    m_outlinePipeline = std::make_unique<MeshOutlinePipeline>(
+        *m_ctx, *m_target, m_pipeline->pipelineLayout);
+
     // ----- Mesh registry — generate all primitive types and upload to GPU -----
     m_meshes = std::make_unique<MeshRegistry>();
     m_meshes->assets[static_cast<int>(MeshType::Cube)]     = MeshGenerator::GenerateCube();
@@ -173,6 +178,7 @@ Renderer::~Renderer()
         m_meshes.reset();
     }
 
+    m_outlinePipeline.reset();
     m_pipeline.reset();
 
     if (m_sceneUboBuffer != VK_NULL_HANDLE)
@@ -249,10 +255,7 @@ void Renderer::RenderFrame()
 
     vkCmdBeginRenderPass(m_cmdBuf, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Bind pipeline + scene descriptor set
-    m_pipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
-
-    // Dynamic viewport + scissor
+    // Dynamic viewport + scissor — set once, shared by all three passes
     VkViewport viewport{};
     viewport.x        = 0.0f;
     viewport.y        = 0.0f;
@@ -267,14 +270,60 @@ void Renderer::RenderFrame()
     scissor.extent = {m_width, m_height};
     vkCmdSetScissor(m_cmdBuf, 0, 1, &scissor);
 
-    // Draw all mesh instances
     const int highlightedId = m_scene->GetHighlightedMeshId();
+
+    // Locate the selected instance (may be nullptr when nothing is selected)
+    const MeshInstance* selectedInst = nullptr;
+    for (const auto& inst : m_scene->GetInstances())
+        if (inst.id == highlightedId) { selectedInst = &inst; break; }
+
+    // --- Pass 1: all non-selected meshes (normal pipeline — no stencil writes) ---
+    m_pipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
     for (const auto& inst : m_scene->GetInstances()) {
+        if (inst.id == highlightedId) continue;
         const MeshAsset& asset = m_meshes->assets[static_cast<int>(inst.type)];
 
         MeshPushConst pc{};
         pc.model    = inst.transform;
-        pc.selected = (inst.id == highlightedId) ? 1 : 0;
+        pc.selected = 0;
+        vkCmdPushConstants(m_cmdBuf, m_pipeline->pipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(MeshPushConst), &pc);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(m_cmdBuf, 0, 1, &asset.vertexBuffer, &offset);
+        vkCmdBindIndexBuffer(m_cmdBuf, asset.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(m_cmdBuf, static_cast<uint32_t>(asset.indices.size()), 1, 0, 0, 0);
+    }
+
+    // --- Pass 2: selected mesh — draws normally AND writes ref=1 into stencil ---
+    if (selectedInst) {
+        const MeshAsset& asset = m_meshes->assets[static_cast<int>(selectedInst->type)];
+
+        m_pipeline->BindAndSetupForStencilWrite(m_cmdBuf, m_sceneSet);
+
+        MeshPushConst pc{};
+        pc.model    = selectedInst->transform;
+        pc.selected = 1;
+        vkCmdPushConstants(m_cmdBuf, m_pipeline->pipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(MeshPushConst), &pc);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(m_cmdBuf, 0, 1, &asset.vertexBuffer, &offset);
+        vkCmdBindIndexBuffer(m_cmdBuf, asset.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(m_cmdBuf, static_cast<uint32_t>(asset.indices.size()), 1, 0, 0, 0);
+    }
+
+    // --- Pass 3: outline — front-cull scaled mesh; only draws where stencil != 1 ---
+    if (selectedInst) {
+        const MeshAsset& asset = m_meshes->assets[static_cast<int>(selectedInst->type)];
+
+        m_outlinePipeline->BindAndSetup(m_cmdBuf, m_sceneSet);
+
+        MeshPushConst pc{};
+        pc.model    = glm::scale(selectedInst->transform, glm::vec3(1.03f));
+        pc.selected = 1;
         vkCmdPushConstants(m_cmdBuf, m_pipeline->pipelineLayout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(MeshPushConst), &pc);
