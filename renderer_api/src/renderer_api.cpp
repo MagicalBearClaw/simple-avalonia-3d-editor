@@ -45,3 +45,38 @@ int renderer_add_mesh(RendererHandle handle, int mesh_type)
 {
     return static_cast<Renderer*>(handle)->AddMesh(mesh_type);
 }
+
+void renderer_remove_mesh(RendererHandle handle, int id)
+{
+    static_cast<Renderer*>(handle)->RemoveMesh(id);
+}
+
+void renderer_set_highlighted_mesh(RendererHandle handle, int id)
+{
+    static_cast<Renderer*>(handle)->SetHighlightedMesh(id);
+}
+
+void renderer_on_mouse_move(RendererHandle handle, float x, float y)
+{
+    static_cast<Renderer*>(handle)->OnMouseMove(x, y);
+}
+
+void renderer_on_mouse_button(RendererHandle handle, int btn, int pressed, float x, float y)
+{
+    static_cast<Renderer*>(handle)->OnMouseButton(btn, pressed != 0, x, y);
+}
+
+void renderer_on_key(RendererHandle handle, int key, int pressed)
+{
+    static_cast<Renderer*>(handle)->OnKey(key, pressed != 0);
+}
+
+void renderer_on_scroll(RendererHandle handle, float delta)
+{
+    static_cast<Renderer*>(handle)->OnScroll(delta);
+}
+
+void renderer_set_fps_mode(RendererHandle handle, int active)
+{
+    static_cast<Renderer*>(handle)->SetFpsMode(active != 0);
+}

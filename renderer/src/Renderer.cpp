@@ -5,6 +5,8 @@
 #include "MeshPipeline.h"
 #include "Mesh.h"
 #include "MeshGenerator.h"
+#include "FpsCamera.h"
+#include "Scene.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -16,16 +18,9 @@
 // Private types — not exposed in the public header
 // ---------------------------------------------------------------------------
 
-struct MeshInstance {
-    int       id;
-    MeshType  type;
-    glm::mat4 transform;
-};
-
+// Prototype meshes only — instance data lives in Scene.
 struct MeshRegistry {
     std::array<MeshAsset, kMeshTypeCount> assets;
-    std::vector<MeshInstance>             instances;
-    int                                   nextId = 0;
 };
 
 // Scene UBO — must match the layout in mesh.vert (set=0, binding=0)
@@ -155,6 +150,11 @@ Renderer::Renderer(uint32_t width, uint32_t height)
     m_meshes->assets[static_cast<int>(MeshType::Cone)]     = MeshGenerator::GenerateCone();
     for (auto& asset : m_meshes->assets)
         asset.Upload(*m_ctx);
+
+    // ----- Camera + scene -----
+    m_camera = std::make_unique<FpsCamera>();
+    m_scene  = std::make_unique<Scene>();
+    m_lastFrameTime = std::chrono::steady_clock::now();
 }
 
 // ---------------------------------------------------------------------------
@@ -203,10 +203,26 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 // ---------------------------------------------------------------------------
 void Renderer::RenderFrame()
 {
-    // Update UBO (identity for now — camera added in Phase 8)
+    // ----- Delta time -----
+    const auto now = std::chrono::steady_clock::now();
+    const float deltaTime = std::chrono::duration<float>(now - m_lastFrameTime).count();
+    m_lastFrameTime = now;
+
+    // ----- Camera update (FPS mode) -----
+    if (m_input.fpsMode) {
+        m_camera->ProcessKeyboard(m_input.w, m_input.s, m_input.a, m_input.d, deltaTime);
+        m_camera->ProcessMouseDelta(m_input.mouseX, m_input.mouseY);
+        m_input.mouseX = 0.0f;
+        m_input.mouseY = 0.0f;
+    }
+
+    // ----- Update UBO -----
+    const float aspect = (m_height > 0)
+        ? static_cast<float>(m_width) / static_cast<float>(m_height)
+        : 1.0f;
     SceneUBO ubo{};
-    ubo.view = glm::mat4(1.0f);
-    ubo.proj = glm::mat4(1.0f);
+    ubo.view = m_camera->GetViewMatrix();
+    ubo.proj = m_camera->GetProjectionMatrix(60.0f, aspect, 0.1f, 1000.0f);
     std::memcpy(m_sceneUboMapped, &ubo, sizeof(ubo));
 
     // Begin command buffer
@@ -250,12 +266,13 @@ void Renderer::RenderFrame()
     vkCmdSetScissor(m_cmdBuf, 0, 1, &scissor);
 
     // Draw all mesh instances
-    for (const auto& inst : m_meshes->instances) {
+    const int highlightedId = m_scene->GetHighlightedMeshId();
+    for (const auto& inst : m_scene->GetInstances()) {
         const MeshAsset& asset = m_meshes->assets[static_cast<int>(inst.type)];
 
         MeshPushConst pc{};
         pc.model    = inst.transform;
-        pc.selected = 0;
+        pc.selected = (inst.id == highlightedId) ? 1 : 0;
         vkCmdPushConstants(m_cmdBuf, m_pipeline->pipelineLayout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(MeshPushConst), &pc);
@@ -350,17 +367,66 @@ void Renderer::SetBackgroundColor(float r, float g, float b, float a)
 }
 
 // ---------------------------------------------------------------------------
-// AddMesh
+// Scene management
 // ---------------------------------------------------------------------------
 int Renderer::AddMesh(int meshType)
 {
-    const int id = m_meshes->nextId++;
-    MeshInstance inst{};
-    inst.id        = id;
-    inst.type      = static_cast<MeshType>(meshType);
-    inst.transform = glm::translate(glm::mat4(1.0f),
-                                    glm::vec3(static_cast<float>(id) * 2.5f, 0.0f, 0.0f));
-    m_meshes->instances.push_back(inst);
-    return id;
+    return m_scene->AddMesh(static_cast<MeshType>(meshType));
+}
+
+void Renderer::RemoveMesh(int id)
+{
+    m_scene->RemoveMesh(id);
+}
+
+void Renderer::SetHighlightedMesh(int id)
+{
+    m_scene->SetHighlightedMesh(id);
+}
+
+// ---------------------------------------------------------------------------
+// Input forwarding
+// ---------------------------------------------------------------------------
+void Renderer::OnMouseMove(float x, float y)
+{
+    m_input.mouseX = x;
+    m_input.mouseY = y;
+}
+
+void Renderer::OnMouseButton(int btn, bool pressed, float x, float y)
+{
+    if (btn == 0) m_input.leftButton  = pressed;
+    if (btn == 1) m_input.rightButton = pressed;
+    // Store last position so other systems can use it.
+    m_input.mouseX = x;
+    m_input.mouseY = y;
+}
+
+void Renderer::OnKey(int key, bool pressed)
+{
+    switch (key) {
+        case 0: m_input.w = pressed; break;
+        case 1: m_input.s = pressed; break;
+        case 2: m_input.a = pressed; break;
+        case 3: m_input.d = pressed; break;
+        default: break; // 4=Delete, 5=F, 6=Esc handled at editor layer
+    }
+}
+
+void Renderer::OnScroll(float delta)
+{
+    // Immediately dolly the camera along its front vector.
+    static constexpr float kScrollSpeed = 1.0f;
+    m_camera->position += m_camera->GetFront() * (delta * kScrollSpeed);
+}
+
+void Renderer::SetFpsMode(bool active)
+{
+    m_input.fpsMode = active;
+    if (!active) {
+        // Clear accumulated deltas so camera doesn't lurch on re-entry.
+        m_input.mouseX = 0.0f;
+        m_input.mouseY = 0.0f;
+    }
 }
 

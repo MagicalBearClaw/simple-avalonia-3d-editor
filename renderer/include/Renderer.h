@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <volk.h>
 #include <vk_mem_alloc.h>
@@ -21,6 +22,16 @@ struct VulkanContext;
 struct OffscreenTarget;
 struct MeshPipeline;
 struct MeshRegistry; // private implementation detail — defined in Renderer.cpp
+class  FpsCamera;
+class  Scene;
+
+// Input state forwarded from the Avalonia layer via C API calls.
+struct InputState {
+    bool  w = false, s = false, a = false, d = false;
+    float mouseX = 0.0f, mouseY = 0.0f;
+    bool  leftButton = false, rightButton = false;
+    bool  fpsMode = false;
+};
 
 class RENDERER_API Renderer {
 public:
@@ -40,13 +51,31 @@ public:
     void SetBackgroundColor(float r, float g, float b, float a);
 
     // Returns the new instance ID (>= 0).  meshType: 0=Cube 1=Sphere 2=Pyramid 3=Cylinder 4=Cone.
-    int AddMesh(int meshType);
+    int  AddMesh(int meshType);
+    void RemoveMesh(int id);
+
+    // Highlight a mesh by ID so the renderer draws it with selected=1 in push constants.
+    // The editor owns actual selection state; this is purely a rendering hint.
+    // Pass -1 to clear.
+    void SetHighlightedMesh(int id);
+
+    // Input forwarding — called from the C API, driven by Avalonia events.
+    void OnMouseMove(float x, float y);
+    void OnMouseButton(int btn, bool pressed, float x, float y);
+    void OnKey(int key, bool pressed);   // 0=W 1=S 2=A 3=D (4/5/6 handled at editor layer)
+    void OnScroll(float delta);
+    void SetFpsMode(bool active);
 
 private:
     std::unique_ptr<VulkanContext>   m_ctx;
     std::unique_ptr<OffscreenTarget> m_target;
     std::unique_ptr<MeshPipeline>    m_pipeline;
     std::unique_ptr<MeshRegistry>    m_meshes;
+    std::unique_ptr<FpsCamera>       m_camera;
+    std::unique_ptr<Scene>           m_scene;
+
+    InputState m_input{};
+    std::chrono::steady_clock::time_point m_lastFrameTime;
 
     // Per-frame command buffer (owned by the command pool in VulkanContext)
     VkCommandBuffer m_cmdBuf = VK_NULL_HANDLE;

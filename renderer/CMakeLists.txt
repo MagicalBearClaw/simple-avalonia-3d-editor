@@ -50,6 +50,8 @@ target_sources(renderer PRIVATE
     src/OffscreenTarget.cpp
     src/MeshPipeline.cpp
     src/MeshGenerator.cpp
+    src/FpsCamera.cpp
+    src/Scene.cpp
     src/VmaImplementation.cpp
 )
 
