@@ -14,16 +14,16 @@ find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 set(SHADER_OUTPUT_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
 file(MAKE_DIRECTORY "${SHADER_OUTPUT_DIR}")
 
-set(VERT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert")
-set(FRAG_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag")
-set(VERT_SPV "${SHADER_OUTPUT_DIR}/triangle.vert.spv")
-set(FRAG_SPV "${SHADER_OUTPUT_DIR}/triangle.frag.spv")
+set(VERT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.vert")
+set(FRAG_SRC "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.frag")
+set(VERT_SPV "${SHADER_OUTPUT_DIR}/mesh.vert.spv")
+set(FRAG_SPV "${SHADER_OUTPUT_DIR}/mesh.frag.spv")
 
 add_custom_command(
     OUTPUT  "${VERT_SPV}"
     COMMAND "${GLSLANG_VALIDATOR}" -V "${VERT_SRC}" -o "${VERT_SPV}"
     DEPENDS "${VERT_SRC}"
-    COMMENT "Compiling triangle.vert → SPIR-V"
+    COMMENT "Compiling mesh.vert -> SPIR-V"
     VERBATIM
 )
 
@@ -31,7 +31,7 @@ add_custom_command(
     OUTPUT  "${FRAG_SPV}"
     COMMAND "${GLSLANG_VALIDATOR}" -V "${FRAG_SRC}" -o "${FRAG_SPV}"
     DEPENDS "${FRAG_SRC}"
-    COMMENT "Compiling triangle.frag → SPIR-V"
+    COMMENT "Compiling mesh.frag -> SPIR-V"
     VERBATIM
 )
 
@@ -48,7 +48,7 @@ target_sources(renderer PRIVATE
     src/Renderer.cpp
     src/VulkanContext.cpp
     src/OffscreenTarget.cpp
-    src/TrianglePipeline.cpp
+    src/MeshPipeline.cpp
     src/VmaImplementation.cpp
 )
 
@@ -58,10 +58,11 @@ target_include_directories(renderer
 )
 
 target_link_libraries(renderer
-    PRIVATE
+    PUBLIC
         Vulkan::Headers
         volk::volk
         GPUOpen::VulkanMemoryAllocator
+    PRIVATE
         glm::glm
 )
 

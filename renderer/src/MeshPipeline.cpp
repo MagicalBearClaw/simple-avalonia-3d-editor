@@ -1,11 +1,12 @@
-#include "TrianglePipeline.h"
+#include "MeshPipeline.h"
 #include "VulkanContext.h"
 #include "OffscreenTarget.h"
+#include "Mesh.h"
 
 #include <stdexcept>
 #include <fstream>
 #include <vector>
-#include <cstring>
+#include <array>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,75 +39,62 @@ static VkShaderModule createModule(VkDevice device, const std::vector<uint32_t>&
 }
 
 // ---------------------------------------------------------------------------
-// TrianglePipeline constructor
+// MeshPipeline constructor
 // ---------------------------------------------------------------------------
-TrianglePipeline::TrianglePipeline(VulkanContext& ctx, OffscreenTarget& target)
-    : m_allocator(target.allocator)
+MeshPipeline::MeshPipeline(VulkanContext& ctx, OffscreenTarget& target,
+                           VkDescriptorSetLayout sceneLayout)
+    : m_device(ctx.device)
 {
-    // Default triangle vertices (NDC): bottom-left red, bottom-right green, top-center blue
-    vertices[0] = {{-0.5f, +0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}};
-    vertices[1] = {{+0.5f, +0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}};
-    vertices[2] = {{ 0.0f, -0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}};
+    // Load shaders first — throws early before any Vulkan object creation.
+    auto vertCode = loadSpirv("shaders/mesh.vert.spv");
+    auto fragCode = loadSpirv("shaders/mesh.frag.spv");
 
-    // Load shaders first — throws if files are missing, before any VMA allocations.
-    auto vertCode = loadSpirv("shaders/triangle.vert.spv");
-    auto fragCode = loadSpirv("shaders/triangle.frag.spv");
-
-    // ----- Vertex buffer (CPU_TO_GPU, persistently mapped) -----
-    {
-        VkBufferCreateInfo bci{};
-        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bci.size  = sizeof(vertices);
-        bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-
-        VmaAllocationCreateInfo ai{};
-        ai.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        ai.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        VmaAllocationInfo allocInfo{};
-        if (vmaCreateBuffer(m_allocator, &bci, &ai, &vertexBuffer, &vertexAlloc, &allocInfo) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create vertex buffer");
-
-        std::memcpy(allocInfo.pMappedData, vertices.data(), sizeof(vertices));
-    }
-
-    // ----- Load shaders -----
-    VkShaderModule vertModule = createModule(ctx.device, vertCode);
-    VkShaderModule fragModule = createModule(ctx.device, fragCode);
-
-    // ----- Pipeline layout (push constants only) -----
+    // ----- Pipeline layout -----
     {
         VkPushConstantRange pcRange{};
         pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pcRange.offset     = 0;
-        pcRange.size       = sizeof(PushConstants);
+        pcRange.size       = sizeof(MeshPushConst);
 
         VkPipelineLayoutCreateInfo ci{};
         ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        ci.setLayoutCount         = 1;
+        ci.pSetLayouts            = &sceneLayout;
         ci.pushConstantRangeCount = 1;
         ci.pPushConstantRanges    = &pcRange;
 
         if (vkCreatePipelineLayout(ctx.device, &ci, nullptr, &pipelineLayout) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create pipeline layout");
+            throw std::runtime_error("Failed to create mesh pipeline layout");
     }
+
+    // ----- Shader modules -----
+    VkShaderModule vertModule = createModule(ctx.device, vertCode);
+    VkShaderModule fragModule = createModule(ctx.device, fragCode);
 
     // ----- Graphics pipeline -----
     {
-        // Vertex input
+        // Vertex input — binding 0, stride 40 bytes
         VkVertexInputBindingDescription binding{};
         binding.binding   = 0;
         binding.stride    = sizeof(Vertex);
         binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        std::array<VkVertexInputAttributeDescription, 2> attrs{};
+        std::array<VkVertexInputAttributeDescription, 3> attrs{};
+        // pos: location=0, vec3 (R32G32B32)
         attrs[0].location = 0;
         attrs[0].binding  = 0;
-        attrs[0].format   = VK_FORMAT_R32G32_SFLOAT;
+        attrs[0].format   = VK_FORMAT_R32G32B32_SFLOAT;
         attrs[0].offset   = offsetof(Vertex, pos);
+        // normal: location=1, vec3
         attrs[1].location = 1;
         attrs[1].binding  = 0;
-        attrs[1].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
-        attrs[1].offset   = offsetof(Vertex, color);
+        attrs[1].format   = VK_FORMAT_R32G32B32_SFLOAT;
+        attrs[1].offset   = offsetof(Vertex, normal);
+        // color: location=2, vec4
+        attrs[2].location = 2;
+        attrs[2].binding  = 0;
+        attrs[2].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attrs[2].offset   = offsetof(Vertex, color);
 
         VkPipelineVertexInputStateCreateInfo vertexInput{};
         vertexInput.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -135,18 +123,25 @@ TrianglePipeline::TrianglePipeline(VulkanContext& ctx, OffscreenTarget& target)
         viewportState.viewportCount = 1;
         viewportState.scissorCount  = 1;
 
-        // Rasterizer
+        // Rasterizer: backface cull, CCW
         VkPipelineRasterizationStateCreateInfo raster{};
         raster.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         raster.polygonMode = VK_POLYGON_MODE_FILL;
-        raster.cullMode    = VK_CULL_MODE_NONE;
-        raster.frontFace   = VK_FRONT_FACE_CLOCKWISE;
+        raster.cullMode    = VK_CULL_MODE_BACK_BIT;
+        raster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         raster.lineWidth   = 1.0f;
 
         // Multisample
         VkPipelineMultisampleStateCreateInfo msaa{};
         msaa.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Depth+stencil: depth test LESS_OR_EQUAL + depth write
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable  = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
 
         // Color blend (no blending)
         VkPipelineColorBlendAttachmentState blendAttach{};
@@ -178,6 +173,7 @@ TrianglePipeline::TrianglePipeline(VulkanContext& ctx, OffscreenTarget& target)
         ci.pViewportState      = &viewportState;
         ci.pRasterizationState = &raster;
         ci.pMultisampleState   = &msaa;
+        ci.pDepthStencilState  = &depthStencil;
         ci.pColorBlendState    = &blend;
         ci.pDynamicState       = &dynamicState;
         ci.layout              = pipelineLayout;
@@ -185,50 +181,28 @@ TrianglePipeline::TrianglePipeline(VulkanContext& ctx, OffscreenTarget& target)
         ci.subpass             = 0;
 
         if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create graphics pipeline");
+            throw std::runtime_error("Failed to create mesh graphics pipeline");
     }
 
     vkDestroyShaderModule(ctx.device, vertModule, nullptr);
     vkDestroyShaderModule(ctx.device, fragModule, nullptr);
-
-    // ----- Allocate command buffer -----
-    {
-        VkCommandBufferAllocateInfo ai{};
-        ai.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        ai.commandPool        = ctx.commandPool;
-        ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        ai.commandBufferCount = 1;
-
-        if (vkAllocateCommandBuffers(ctx.device, &ai, &commandBuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate command buffer");
-    }
 }
 
 // ---------------------------------------------------------------------------
-// TrianglePipeline destructor
+// MeshPipeline destructor
 // ---------------------------------------------------------------------------
-TrianglePipeline::~TrianglePipeline()
+MeshPipeline::~MeshPipeline()
 {
-    VmaAllocatorInfo info{};
-    vmaGetAllocatorInfo(m_allocator, &info);
-    VkDevice dev = info.device;
-
-    // Command buffer is freed with the pool; no explicit free needed.
-    vkDestroyPipeline(dev, pipeline, nullptr);
-    vkDestroyPipelineLayout(dev, pipelineLayout, nullptr);
-    vmaDestroyBuffer(m_allocator, vertexBuffer, vertexAlloc);
+    vkDestroyPipeline(m_device, pipeline, nullptr);
+    vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
 }
 
 // ---------------------------------------------------------------------------
-// UpdateVertexColor
+// BindAndSetup
 // ---------------------------------------------------------------------------
-void TrianglePipeline::UpdateVertexColor(VulkanContext& /*ctx*/, int index, float r, float g, float b, float a)
+void MeshPipeline::BindAndSetup(VkCommandBuffer cmd, VkDescriptorSet sceneSet) const
 {
-    if (index < 0 || index > 2) return;
-    vertices[index].color = {r, g, b, a};
-
-    void* mapped = nullptr;
-    vmaMapMemory(m_allocator, vertexAlloc, &mapped);
-    std::memcpy(mapped, vertices.data(), sizeof(vertices));
-    vmaUnmapMemory(m_allocator, vertexAlloc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                            0, 1, &sceneSet, 0, nullptr);
 }

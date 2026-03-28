@@ -40,8 +40,3 @@ void renderer_set_background_color(RendererHandle handle, float r, float g, floa
 {
     static_cast<Renderer*>(handle)->SetBackgroundColor(r, g, b, a);
 }
-
-void renderer_set_vertex_color(RendererHandle handle, int vertex_index, float r, float g, float b, float a)
-{
-    static_cast<Renderer*>(handle)->SetVertexColor(vertex_index, r, g, b, a);
-}

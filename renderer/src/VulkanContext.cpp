@@ -152,6 +152,23 @@ VulkanContext::VulkanContext()
         vkGetDeviceQueue(device, graphicsFamily, 0, &graphicsQueue);
     }
 
+    // ----- VMA allocator -----
+    {
+        VmaVulkanFunctions vkFuncs{};
+        vkFuncs.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+        vkFuncs.vkGetDeviceProcAddr   = vkGetDeviceProcAddr;
+
+        VmaAllocatorCreateInfo ai{};
+        ai.physicalDevice   = physicalDevice;
+        ai.device           = device;
+        ai.instance         = instance;
+        ai.vulkanApiVersion = VK_API_VERSION_1_2;
+        ai.pVulkanFunctions = &vkFuncs;
+
+        if (vmaCreateAllocator(&ai, &allocator) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create VMA allocator");
+    }
+
     // ----- Command pool -----
     {
         VkCommandPoolCreateInfo ci{};
@@ -171,6 +188,7 @@ VulkanContext::~VulkanContext()
 {
     if (device) {
         vkDestroyCommandPool(device, commandPool, nullptr);
+        vmaDestroyAllocator(allocator);
         vkDestroyDevice(device, nullptr);
     }
 #ifndef NDEBUG
