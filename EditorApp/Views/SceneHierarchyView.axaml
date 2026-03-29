@@ -1,0 +1,27 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:EditorApp.ViewModels"
+             x:Class="EditorApp.Views.SceneHierarchyView"
+             x:DataType="vm:SceneHierarchyViewModel">
+  <ListBox ItemsSource="{Binding Primitives}"
+           SelectedItem="{Binding SelectedItem, Mode=TwoWay}">
+    <ListBox.ItemTemplate>
+      <DataTemplate>
+        <TextBlock Text="{Binding DisplayName}"/>
+      </DataTemplate>
+    </ListBox.ItemTemplate>
+    <ListBox.ContextMenu>
+      <ContextMenu>
+        <MenuItem Header="Add">
+          <MenuItem Header="Cube"     Command="{Binding AddCubeCommand}"/>
+          <MenuItem Header="Sphere"   Command="{Binding AddSphereCommand}"/>
+          <MenuItem Header="Pyramid"  Command="{Binding AddPyramidCommand}"/>
+          <MenuItem Header="Cylinder" Command="{Binding AddCylinderCommand}"/>
+          <MenuItem Header="Cone"     Command="{Binding AddConeCommand}"/>
+        </MenuItem>
+        <Separator/>
+        <MenuItem Header="Remove" Command="{Binding RemoveSelectedCommand}"/>
+      </ContextMenu>
+    </ListBox.ContextMenu>
+  </ListBox>
+</UserControl>

@@ -839,6 +839,201 @@ Wrap `RendererControl` in a `Grid`. Add:
 14. ImGuizmo gizmo appears when a mesh is selected; T/R/S toolbar buttons switch operation; dragging gizmo updates mesh transform
 15. Gizmo drag does NOT trigger FPS camera movement (`renderer_is_gizmo_hovered` guard)
 16. Infinite grid visible at Y=0; X axis red, Z axis blue; grid fades with distance
+17. Scene Hierarchy panel lists all primitives; clicking an item selects it in the viewport
+18. Clicking a mesh in the viewport updates the hierarchy selection
+19. Right-click hierarchy → Add submenu adds a new primitive to both the list and the viewport
+20. Right-click hierarchy → Remove (or Delete key in viewport) removes the item from both the list and the viewport
+
+---
+
+## Phase 15: Scene Hierarchy Panel
+
+*Depends on Phase 13/14. No C++ changes required — all mutations already flow through C# code paths.*
+
+### 15a. `PrimitiveItem` Model (`EditorApp/Models/PrimitiveItem.cs`)
+New plain class (no `ObservableObject` needed — the collection itself notifies):
+```csharp
+public class PrimitiveItem
+{
+    private static readonly string[] TypeNames = ["Cube", "Sphere", "Pyramid", "Cylinder", "Cone"];
+
+    public int    Id          { get; }
+    public int    Type        { get; }
+    public string DisplayName { get; }
+
+    public PrimitiveItem(int id, int type)
+    {
+        Id          = id;
+        Type        = type;
+        DisplayName = $"{TypeNames[type]} #{id}";
+    }
+}
+```
+
+### 15b. Extend `RendererState` (`EditorApp/RendererState.cs`)
+Add one property to the existing static class:
+```csharp
+public static ObservableCollection<PrimitiveItem> Primitives { get; } = new();
+```
+
+### 15c. Update `PrimitivesToolViewModel` (`EditorApp/ViewModels/PrimitivesToolViewModel.cs`)
+`TryAddMesh` currently discards the `int` returned by `renderer_add_mesh`. Capture it and register the new item:
+```csharp
+private static void TryAddMesh(int type)
+{
+    if (!RendererState.IsReady) return;
+    int id = NativeRenderer.renderer_add_mesh(RendererState.Handle, type);
+    RendererState.Primitives.Add(new PrimitiveItem(id, type));
+}
+```
+
+### 15d. Update `RendererControl` Delete Key Handler (`EditorApp/Controls/RendererControl.cs`)
+After the existing `renderer_remove_mesh` call inside the `Delete` key handler, also remove the item from the shared collection:
+```csharp
+NativeRenderer.renderer_remove_mesh(RendererState.Handle, SelectedMeshId);
+var toRemove = RendererState.Primitives.FirstOrDefault(p => p.Id == SelectedMeshId);
+if (toRemove != null)
+    RendererState.Primitives.Remove(toRemove);
+SelectedMeshId = -1;
+```
+
+### 15e. `SceneHierarchyViewModel` (`EditorApp/ViewModels/SceneHierarchyViewModel.cs`)
+New class inheriting from `Tool`. Constructor accepts the shared `RendererDocumentViewModel` reference to keep selection in sync bidirectionally:
+
+```csharp
+public partial class SceneHierarchyViewModel : Tool
+{
+    private readonly RendererDocumentViewModel _rendererDoc;
+    private bool _syncingSelection;
+
+    public ObservableCollection<PrimitiveItem> Primitives => RendererState.Primitives;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(RemoveSelectedCommand))]
+    private PrimitiveItem? _selectedItem;
+
+    public SceneHierarchyViewModel(RendererDocumentViewModel rendererDoc)
+    {
+        _rendererDoc = rendererDoc;
+        _rendererDoc.PropertyChanged += OnRendererDocPropertyChanged;
+    }
+
+    partial void OnSelectedItemChanged(PrimitiveItem? value)
+    {
+        if (_syncingSelection) return;
+        _syncingSelection = true;
+        _rendererDoc.SelectedMeshId = value?.Id ?? -1;
+        _syncingSelection = false;
+    }
+
+    private void OnRendererDocPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(RendererDocumentViewModel.SelectedMeshId)) return;
+        if (_syncingSelection) return;
+        _syncingSelection = true;
+        SelectedItem = Primitives.FirstOrDefault(p => p.Id == _rendererDoc.SelectedMeshId);
+        _syncingSelection = false;
+    }
+
+    // Add commands (same pattern as PrimitivesToolViewModel)
+    [RelayCommand] private void AddCube()     => TryAddMesh(0);
+    [RelayCommand] private void AddSphere()   => TryAddMesh(1);
+    [RelayCommand] private void AddPyramid()  => TryAddMesh(2);
+    [RelayCommand] private void AddCylinder() => TryAddMesh(3);
+    [RelayCommand] private void AddCone()     => TryAddMesh(4);
+
+    private static void TryAddMesh(int type)
+    {
+        if (!RendererState.IsReady) return;
+        int id = NativeRenderer.renderer_add_mesh(RendererState.Handle, type);
+        RendererState.Primitives.Add(new PrimitiveItem(id, type));
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRemoveSelected))]
+    private void RemoveSelected()
+    {
+        if (SelectedItem is null || !RendererState.IsReady) return;
+        NativeRenderer.renderer_remove_mesh(RendererState.Handle, SelectedItem.Id);
+        Primitives.Remove(SelectedItem);
+        SelectedItem = null;
+        _rendererDoc.SelectedMeshId = -1;
+    }
+
+    private bool CanRemoveSelected() => SelectedItem is not null;
+}
+```
+
+### 15f. `SceneHierarchyView.axaml` (`EditorApp/Views/SceneHierarchyView.axaml`)
+A `ListBox` bound to the `Primitives` collection. Right-click context menu provides Add (submenu) and Remove actions:
+
+```xml
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:EditorApp.ViewModels"
+             x:DataType="vm:SceneHierarchyViewModel">
+  <ListBox ItemsSource="{Binding Primitives}"
+           SelectedItem="{Binding SelectedItem, Mode=TwoWay}">
+    <ListBox.ItemTemplate>
+      <DataTemplate>
+        <TextBlock Text="{Binding DisplayName}"/>
+      </DataTemplate>
+    </ListBox.ItemTemplate>
+    <ListBox.ContextMenu>
+      <ContextMenu>
+        <MenuItem Header="Add">
+          <MenuItem Header="Cube"     Command="{Binding AddCubeCommand}"/>
+          <MenuItem Header="Sphere"   Command="{Binding AddSphereCommand}"/>
+          <MenuItem Header="Pyramid"  Command="{Binding AddPyramidCommand}"/>
+          <MenuItem Header="Cylinder" Command="{Binding AddCylinderCommand}"/>
+          <MenuItem Header="Cone"     Command="{Binding AddConeCommand}"/>
+        </MenuItem>
+        <Separator/>
+        <MenuItem Header="Remove" Command="{Binding RemoveSelectedCommand}"/>
+      </ContextMenu>
+    </ListBox.ContextMenu>
+  </ListBox>
+</UserControl>
+```
+
+### 15g. Update `EditorDockFactory` (`EditorApp/Dock/EditorDockFactory.cs`)
+Instantiate `SceneHierarchyViewModel` (passing `rendererDoc`) and add it to the `ToolDock` as the active dockable:
+
+```csharp
+var sceneHierarchy = new SceneHierarchyViewModel(rendererDoc)
+{
+    Id    = "SceneHierarchy",
+    Title = "Scene Hierarchy"
+};
+
+var toolDock = new ToolDock
+{
+    Id               = "ToolsDock",
+    Proportion       = 0.25,
+    Alignment        = Alignment.Left,
+    GripMode         = GripMode.Visible,
+    VisibleDockables = CreateList<IDockable>(sceneHierarchy, sceneProps, primitives),
+    ActiveDockable   = sceneHierarchy
+};
+```
+
+### Files changed in Phase 15
+| File | Change |
+|---|---|
+| `EditorApp/Models/PrimitiveItem.cs` | **new** — `Id`, `Type`, `DisplayName` |
+| `EditorApp/RendererState.cs` | add `Primitives` `ObservableCollection<PrimitiveItem>` |
+| `EditorApp/ViewModels/PrimitivesToolViewModel.cs` | capture returned ID; push to `RendererState.Primitives` |
+| `EditorApp/Controls/RendererControl.cs` | Delete handler also removes from `RendererState.Primitives` |
+| `EditorApp/ViewModels/SceneHierarchyViewModel.cs` | **new** — Tool VM with bidirectional selection sync + add/remove commands |
+| `EditorApp/Views/SceneHierarchyView.axaml` | **new** — ListBox + ContextMenu |
+| `EditorApp/Views/SceneHierarchyView.axaml.cs` | **new** — empty code-behind |
+| `EditorApp/Dock/EditorDockFactory.cs` | instantiate `SceneHierarchyViewModel`; add to ToolDock as active tab |
+
+### Decisions
+- **Primitive tracking on C# side** — `RendererState.Primitives` holds the list; no new C++ API needed.
+- **Add commands duplicated** — same 2-line pattern as `PrimitivesToolViewModel`; only two callers, not worth a shared service.
+- **Bidirectional selection sync** — `RendererDocumentViewModel.SelectedMeshId` stays canonical; hierarchy subscribes via `PropertyChanged` with a re-entry guard (`_syncingSelection`) to prevent loops.
+- **`ViewLocator` auto-resolves** — naming convention `SceneHierarchyViewModel` → `SceneHierarchyView` is handled automatically; no registration needed.
+- **DisplayName format** — `"Cube #0"`, `"Sphere #3"` etc. (type name + mesh ID).
 
 ---
 

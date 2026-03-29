@@ -16,6 +16,12 @@ public class EditorDockFactory : Factory
             Title = "Renderer"
         };
 
+        var sceneHierarchy = new SceneHierarchyViewModel(rendererDoc)
+        {
+            Id    = "SceneHierarchy",
+            Title = "Scene Hierarchy"
+        };
+
         var sceneProps = new ScenePropertiesViewModel
         {
             Id = "SceneProperties",
@@ -42,8 +48,8 @@ public class EditorDockFactory : Factory
             Proportion = 0.25,
             Alignment = Alignment.Left,
             GripMode = GripMode.Visible,
-            VisibleDockables = CreateList<IDockable>(sceneProps, primitives),
-            ActiveDockable = sceneProps
+          VisibleDockables = CreateList<IDockable>(sceneHierarchy, sceneProps, primitives),
+              ActiveDockable = sceneHierarchy
         };
 
         var mainLayout = new ProportionalDock

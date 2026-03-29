@@ -1,8 +1,10 @@
 using System;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -55,16 +57,46 @@ public sealed class RendererControl : Control
     private volatile bool _hasPendingResize;
     private int _pendingWidth, _pendingHeight; // written UI thread, read render thread, both under _syncObject
 
+    // Ensures we subscribe to ApplicationLifetime.Exit exactly once.
+    private bool _exitSubscribed;
+
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        // Renderer is initialized when bounds first become non-zero (OnPropertyChanged)
+
+        // Subscribe to the application Exit event exactly once so we
+        // fully destroy the renderer when the process truly exits.
+        if (!_exitSubscribed)
+        {
+            _exitSubscribed = true;
+            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime app)
+                app.Exit += (_, _) => StopRenderer();
+        }
+
+        // Re-attach after a dock move: if the render thread was somehow stopped (should not
+        // happen in normal flow), restart it. In the normal case the thread never stops during
+        // dock rearrangements so this is a no-op safety net.
+        if (_handle != 0 && _renderThread == null)
+        {
+            RendererState.Handle  = _handle;
+            RendererState.IsReady = true;
+            StartRenderLoop();
+        }
+        // If handle is 0 the renderer hasn't been created yet — InitializeRenderer is
+        // triggered by the first non-zero Bounds change via OnPropertyChanged.
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
-        StopRenderer();
+        // Only clean up FPS mode. The render thread intentionally keeps running across dock
+        // rearrangements — stopping and restarting it risks corrupting ImGui's frame state.
+        if (FpsModeActive && _handle != 0)
+        {
+            NativeRenderer.renderer_set_fps_mode(_handle, 0);
+            NativeRenderer.ShowCursor(true);
+            FpsModeActive = false;
+        }
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
@@ -201,6 +233,8 @@ public sealed class RendererControl : Control
                 break;
             case Key.Delete when SelectedMeshId != -1:
                 NativeRenderer.renderer_remove_mesh(_handle, SelectedMeshId);
+                var toRemove = RendererState.Primitives.FirstOrDefault(p => p.Id == SelectedMeshId);
+                if (toRemove != null) RendererState.Primitives.Remove(toRemove);
                 _suppressHighlightForward = true;
                 SelectedMeshId = -1;
                 _suppressHighlightForward = false;
@@ -252,9 +286,14 @@ public sealed class RendererControl : Control
             PixelFormats.Bgra8888,
             AlphaFormat.Unpremul);
 
-        RendererState.Handle = _handle;
+        RendererState.Handle  = _handle;
         RendererState.IsReady = true;
 
+        StartRenderLoop();
+    }
+
+    private void StartRenderLoop()
+    {
         _cts = new CancellationTokenSource();
         _renderThread = new Thread(RenderLoop)
         {
@@ -296,9 +335,9 @@ public sealed class RendererControl : Control
         Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Background);
     }
 
+    // Full teardown — called only when the application truly exits.
     private void StopRenderer()
     {
-        // Exit FPS mode cleanly before tearing down the renderer.
         if (FpsModeActive)
         {
             if (_handle != 0) NativeRenderer.renderer_set_fps_mode(_handle, 0);

@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.Input;
 using Dock.Model.Mvvm.Controls;
+using EditorApp.Models;
 
 namespace EditorApp.ViewModels;
 
@@ -22,7 +23,8 @@ public partial class PrimitivesToolViewModel : Tool
 
     private static void TryAddMesh(int type)
     {
-        if (RendererState.IsReady)
-            NativeRenderer.renderer_add_mesh(RendererState.Handle, type);
+        if (!RendererState.IsReady) return;
+        int id = NativeRenderer.renderer_add_mesh(RendererState.Handle, type);
+        RendererState.Primitives.Add(new PrimitiveItem(id, type));
     }
 }
