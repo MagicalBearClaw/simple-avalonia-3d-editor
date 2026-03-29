@@ -4,6 +4,8 @@
 
 A Vulkan offscreen 3D scene editor prototype built on Avalonia .NET 9. Vulkan renders a full 3D scene to a CPU-readable staging buffer; the Avalonia app reads pixel data via P/Invoke into a `WriteableBitmap` each frame. Avalonia owns all windowing, input, and UI — no embedded HWND.
 
+![Editor Demo](EditorAppDemo.gif)
+
 ## Features
 
 - **5 mesh primitives** — Cube, Sphere, Pyramid, Cylinder, Cone; add and remove from the scene at runtime
