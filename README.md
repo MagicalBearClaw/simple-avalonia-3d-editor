@@ -1,6 +1,19 @@
 # test_vulkan_avalonia
 
-A Vulkan offscreen renderer integrated with an Avalonia .NET 9 editor. Vulkan renders a colored triangle to a CPU-readable staging buffer; the Avalonia app reads pixel data via P/Invoke into a `WriteableBitmap` each frame. Avalonia owns all windowing and input — no embedded HWND.
+> **Disclaimer:** This project was built using GitHub Copilot agent workflows. The code quality may not reflect best practices or production standards. It was created as a learning exercise to explore agentic development workflows — not as a reference implementation.
+
+A Vulkan offscreen 3D scene editor prototype built on Avalonia .NET 9. Vulkan renders a full 3D scene to a CPU-readable staging buffer; the Avalonia app reads pixel data via P/Invoke into a `WriteableBitmap` each frame. Avalonia owns all windowing, input, and UI — no embedded HWND.
+
+## Features
+
+- **5 mesh primitives** — Cube, Sphere, Pyramid, Cylinder, Cone; add and remove from the scene at runtime
+- **FPS camera** — right-click drag to look, WASD to fly; toggleable from the toolbar
+- **Infinite anti-aliased grid** — XZ floor plane with X-axis (red) and Z-axis (blue) highlighted, alpha-faded with distance
+- **Scene hierarchy** — list of scene meshes with add, remove, and selection
+- **Stencil selection outline** — selected mesh highlighted with a magenta outline via a two-pass stencil technique
+- **Transform gizmos** — Translate / Rotate / Scale via ImGuizmo; Local and World space modes
+- **Scene properties** — background color control
+- **Dock layout** — all panels are floatable, tabable, and resizable via Dock.Avalonia
 
 ## Project Layout
 
@@ -9,9 +22,9 @@ test_vulkan_avalonia/
 ├── CMakeLists.txt          — root, adds renderer/ renderer_api/ renderer_test/
 ├── vcpkg.json              — C++ dependencies
 ├── CMakePresets.json       — build presets (x64-debug, x64-release)
-├── renderer/               — renderer.dll  (Vulkan offscreen renderer, C++)
+├── renderer/               — renderer.dll  (Vulkan offscreen renderer: mesh/grid/outline pipelines, FPS camera, scene graph, ImGuizmo)
 ├── renderer_api/           — renderer_api.dll  (C wrapper for P/Invoke)
-├── renderer_test/          — renderer_test.exe (SDL3 standalone test harness)
+├── renderer_test/          — renderer_test.exe (SDL3 standalone test harness for renderer.dll)
 └── EditorApp/              — .NET 9 Avalonia editor application
 ```
 
@@ -69,8 +82,11 @@ bin/
 ├── renderer_api.dll
 ├── renderer_test.exe
 └── shaders/
-    ├── triangle.vert.spv
-    └── triangle.frag.spv
+    ├── mesh.vert.spv
+    ├── mesh.frag.spv
+    ├── grid.vert.spv
+    ├── grid.frag.spv
+    └── outline.frag.spv
 ```
 
 Shaders are compiled from GLSL at build time by `glslangValidator` and placed next to the DLLs. All executables resolve shaders via the relative path `shaders/` from their working directory.
@@ -93,8 +109,10 @@ dotnet run
 ```
 
 The editor displays a Dock layout with:
-- **Center** — `RendererControl` viewport fed by Vulkan pixel data
-- **Left tools** — Background color picker and per-vertex color pickers
+- **Center** — `RendererControl` viewport fed by Vulkan pixel data; supports FPS camera and gizmo interaction
+- **Left** — **Primitives** tool to add mesh types to the scene
+- **Left** — **Scene Hierarchy** showing all scene meshes; click to select, remove to delete
+- **Left** — **Scene Properties** with background color control
 
 Before running, ensure `renderer.dll` and `renderer_api.dll` are present in the app's output folder (see **Build Integration** below).
 
